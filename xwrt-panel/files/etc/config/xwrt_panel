@@ -1,0 +1,7 @@
+config panel
+	option brightness '80'
+	option rotate '0'
+	option blank '5'
+	option page_usage '1'
+	option page_clients '1'
+	option page_wifi '1'
