@@ -1,0 +1,197 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: luci-app-glinet-panel 1.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-15 23:40+0800\n"
+"PO-Revision-Date: 2026-09-15 23:40+0800\n"
+"Last-Translator: Beaverfffan <1056715226@qq.com>\n"
+"Language-Team: Chinese (Simplified)\n"
+"Language: zh-cn\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+msgid "Panel Screen"
+msgstr "屏幕面板"
+
+msgid "GL.iNet Panel Screen"
+msgstr "GL.iNet 屏幕面板"
+
+msgid ""
+"Settings for the TFT panel UI (glinet-panel-ui) of the GL-BE10000 / GL-"
+"BE14000. Changes are applied to /etc/config/glinet_panel and the panel "
+"service is restarted on \"Save & Apply\"."
+msgstr ""
+"GL-BE10000 / GL-BE14000 机身 TFT 屏幕（glinet-panel-ui）的设置。"
+"所有修改写入 /etc/config/glinet_panel，点击「保存并应用」后自动重启面板服务生效。"
+
+msgid "Panel service"
+msgstr "面板服务"
+
+msgid "Service state"
+msgstr "服务状态"
+
+msgid "running"
+msgstr "运行中"
+
+msgid "not running"
+msgstr "未运行"
+
+msgid "Control"
+msgstr "控制"
+
+msgid "Restart panel"
+msgstr "重启面板"
+
+msgid "Stop"
+msgstr "停止"
+
+msgid "Service action \"%s\" %s"
+msgstr "服务操作「%s」%s"
+
+msgid "succeeded"
+msgstr "成功"
+
+msgid "failed"
+msgstr "失败"
+
+msgid "Appearance"
+msgstr "外观"
+
+msgid "Brightness"
+msgstr "亮度"
+
+msgid "Panel backlight brightness, 10 to 100 percent."
+msgstr "屏幕背光亮度，范围 10 到 100%。"
+
+msgid "Background"
+msgstr "背景"
+
+msgid ""
+"Gradient background from /usr/share/glinet-panel-ui/backgrounds. \"Black\" "
+"disables the background image."
+msgstr ""
+"使用 /usr/share/glinet-panel-ui/backgrounds 中的渐变背景，"
+"「纯黑」表示不使用背景图。"
+
+msgid "Black (none)"
+msgstr "纯黑（无背景）"
+
+msgid "Gradient %d"
+msgstr "渐变 %d"
+
+msgid "Card opacity"
+msgstr "卡片不透明度"
+
+msgid ""
+"How solid the card behind a list is, 0-100. Lower values let the background "
+"shine through."
+msgstr "列表卡片底色的不透明度（0-100），数值越低背景越透出。"
+
+msgid "Follow finger"
+msgstr "跟随手指"
+
+msgid ""
+"Pages follow the finger while swiping instead of changing in one step."
+msgstr "滑动翻页时页面跟随手指，而不是整页直接切换。"
+
+msgid "Behaviour"
+msgstr "行为"
+
+msgid "Auto lock (min)"
+msgstr "自动锁屏（分钟）"
+
+msgid "Minutes without interaction before the panel goes idle, 1 to 30."
+msgstr "无操作多少分钟后进入锁屏，范围 1 到 30。"
+
+msgid "When idle"
+msgstr "锁屏时"
+
+msgid ""
+"What happens when the panel goes idle: keep the clock lit or turn the "
+"backlight off."
+msgstr "锁屏后的表现：保留时钟显示，或完全关闭背光。"
+
+msgid "Clock stays on"
+msgstr "保留时钟"
+
+msgid "Blank (backlight off)"
+msgstr "息屏（关闭背光）"
+
+msgid "Unlock PIN"
+msgstr "解锁 PIN"
+
+msgid ""
+"Optional 6-digit PIN, asked for when leaving idle. Leave empty for no "
+"keypad."
+msgstr "可选的 6 位数字 PIN 码，解锁时输入；留空表示不需要密码。"
+
+msgid "not set"
+msgstr "未设置"
+
+msgid "Test pages"
+msgstr "测试页面"
+
+msgid ""
+"Append the touch, font and colour test pages to the page list."
+msgstr "在页面列表末尾追加触摸、字体和颜色测试页。"
+
+msgid "Weather page"
+msgstr "天气页"
+
+msgid "Latitude"
+msgstr "纬度"
+
+msgid ""
+"Panel location in degrees. Both latitude and longitude are required for the "
+"weather page."
+msgstr "设备所在位置（度）。天气页需要同时填写纬度和经度，否则该页不会出现。"
+
+msgid "Longitude"
+msgstr "经度"
+
+msgid "Pages"
+msgstr "页面"
+
+msgid "Page order"
+msgstr "页面顺序"
+
+msgid ""
+"Root pages in swipe order. Use the entries below to add pages; drag-free "
+"ordering: remove and re-add to reorder."
+msgstr ""
+"滑动切换的根页面列表。添加即排到末尾；要调整顺序请先删除再重新添加。"
+
+msgid "Traffic"
+msgstr "实时流量"
+
+msgid "Weather"
+msgstr "天气"
+
+msgid "WiFi status"
+msgstr "WiFi 状态"
+
+msgid "WiFi toggles"
+msgstr "WiFi 开关"
+
+msgid "Radio"
+msgstr "收音机"
+
+msgid "QR codes"
+msgstr "二维码"
+
+msgid "Clients"
+msgstr "客户端"
+
+msgid "Interfaces"
+msgstr "接口"
+
+msgid "Ports"
+msgstr "端口"
+
+msgid "System"
+msgstr "系统"
+
+msgid "Reboot"
+msgstr "重启"
