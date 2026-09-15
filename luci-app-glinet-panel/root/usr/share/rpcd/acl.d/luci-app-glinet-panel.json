@@ -1,0 +1,15 @@
+{
+	"luci-app-glinet-panel": {
+		"description": "Grant UCI and service access to luci-app-glinet-panel",
+		"read": {
+			"uci": [ "glinet_panel" ],
+			"ubus": {
+				"service": [ "list" ]
+			}
+		},
+		"write": {
+			"uci": [ "glinet_panel" ],
+			"init.d": [ "glinet-panel-ui" ]
+		}
+	}
+}

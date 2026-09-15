@@ -1,0 +1,14 @@
+{
+	"admin/services/glinet-panel": {
+		"title": "Panel Screen",
+		"order": 90,
+		"action": {
+			"type": "view",
+			"path": "glinet-panel"
+		},
+		"depends": {
+			"acl": [ "luci-app-glinet-panel" ],
+			"uci": { "glinet_panel": true }
+		}
+	}
+}

@@ -1,0 +1,5 @@
+{
+	"glinet_panel": {
+		"init": [ "glinet-panel-ui" ]
+	}
+}
