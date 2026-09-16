@@ -4,7 +4,8 @@ GL-BE10000 / GL-BE14000 机身 TFT 屏幕（320x240）的**自研极简统计面
 按 x-wrt 习惯做统计，不复刻 GL 原厂交互（无锁屏、无 PIN、无天气）。
 
 基于主线 `ucode-mod-lvgl` 从零实现（ucode + LVGL，DRM 显示 + evdev 触摸），
-仅借用 [glinet-panel-ui](https://github.com/blogic/feed-blogic) 的字体文件。
+**自带 Inter 字体**（`files/usr/share/xwrt-panel/fonts/`，OFL-1.1），
+**不依赖 `glinet-panel-ui`**。
 启动时在屏上显示 **x-wrt 自己的 logo**（取自 `x-wrt/luci` 的 `logo.svg`，
 栅格化成 `/usr/share/xwrt-panel/xwrt-logo.png`）。
 
@@ -60,25 +61,34 @@ rx_speed_pkts:rx_speed_bytes,tx_speed_pkts:tx_speed_bytes,ifname
 **不需要装 nlbwmon，也不需要打开 conntrack accounting。**
 该设备不存在时面板自动退化为只显示设备列表（不报错）。
 
-## 与 glinet-panel-ui 的关系
+## 依赖：自包含，不依赖 glinet-panel-ui
 
-- **编译期**：`xwrt-panel` 依赖 `glinet-panel-ui` 软件包，但只取它的
-  字体（`/usr/share/glinet-panel-ui/fonts/*.bin`）。
-- **运行期**：两个面板驱动同一块 DRM 显示，**二选一运行**。
-  安装 `xwrt-panel` 时会自动停止并禁用 `glinet-panel-ui` 服务；
-  `xwrt-panel` 启动前也会先停掉对方。
+- **只吃通用绑定层**：`ucode` + `ucode-mod-lvgl`（提供 `lv.so`，来自
+  [blogic/feed-blogic](https://github.com/blogic/feed-blogic)）
+  + `ucode-mod-{ubus,uloop,uci,fs}`；内核侧要 `kmod-drm-panel-mipi-dbi`、
+  `kmod-backlight-pwm`、`kmod-input-touchscreen-cst353x`。
+  `ucode-mod-lvgl` 自己声明 "carries no fonts or images"，本就是给任意应用用的。
+- **字体随包分发**：`files/usr/share/xwrt-panel/fonts/` 是 Inter 的 LVGL 二进制字体
+  （13 个 `.bin`，含 `inter_light_45`、`inter_semibold_21` 等），
+  许可 **OFL-1.1**，见同目录 `OFL.txt`。
+- **不依赖 `glinet-panel-ui`**：那是一整套给 GL 原厂固件接入用的 ucode 界面
+  （自带 init/config/preinit 与资源），我们不需要它的任何一部分。
+- **防御性互斥仍然保留**：万一两个包都被装上，它们驱动同一块 DRM，
+  只能二选一 —— 安装 `xwrt-panel` 时会停止并禁用对方，启动前也会先停掉对方。
 
 ## 编入固件
 
 ```sh
-# feeds.conf.default 增加（字体依赖）：
+# feeds.conf 增加 blogic feed（只为 lvgl 与 ucode-mod-lvgl）：
 src-git blogic https://github.com/blogic/feed-blogic.git
+# 本仓库整体作为 feed 接入（或把 xwrt-panel/ 与 luci-app-xwrt-panel/ 拷进源码树 package/）：
+src-link xwrtpanel /path/to/glinet-panel
 
-# 本仓库 xwrt-panel/ 与 luci-app-xwrt-panel/ 复制到源码树 package/ 下
-# .config 增加：
-CONFIG_PACKAGE_glinet-panel-ui=y
+./scripts/feeds update -a && ./scripts/feeds install -a
+
+# .config：
 CONFIG_PACKAGE_xwrt-panel=y
 CONFIG_PACKAGE_luci-app-xwrt-panel=y
 ```
 
-License: Apache-2.0
+License: Apache-2.0（`xwrt-panel` 内置的 Inter 字体为 OFL-1.1，见 `OFL.txt`）

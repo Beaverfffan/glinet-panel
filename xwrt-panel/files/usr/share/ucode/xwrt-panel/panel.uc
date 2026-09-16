@@ -38,7 +38,7 @@ const C_TX = 0x64d2ff;
 const C_OK = 0x32d74b;
 const C_DOWN = 0xff453a;
 
-const FONT_DIR = '/usr/share/glinet-panel-ui/fonts';
+const FONT_DIR = '/usr/share/xwrt-panel/fonts';
 const LOGO_FILE = '/usr/share/xwrt-panel/xwrt-logo.png';
 const NATFLOW_USERINFO = '/dev/natflow_userinfo_ctl';
 

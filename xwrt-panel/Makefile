@@ -4,7 +4,8 @@ PKG_NAME:=xwrt-panel
 PKG_VERSION:=1.0.0
 PKG_RELEASE:=1
 
-PKG_LICENSE:=Apache-2.0
+PKG_LICENSE:=Apache-2.0 OFL-1.1
+PKG_LICENSE_FILES:=files/usr/share/xwrt-panel/fonts/OFL.txt
 PKG_MAINTAINER:=Beaverfffan <1056715226@qq.com>
 
 include $(INCLUDE_DIR)/package.mk
@@ -14,16 +15,21 @@ define Package/xwrt-panel
   CATEGORY:=Utilities
   TITLE:=Minimal statistics panel for the GL-BE10000/BE14000 TFT
   DEPENDS:=+ucode +ucode-mod-lvgl +ucode-mod-ubus +ucode-mod-uloop \
-    +ucode-mod-uci +ucode-mod-fs +glinet-panel-ui
+    +ucode-mod-uci +ucode-mod-fs
   PKGARCH:=all
 endef
 
 define Package/xwrt-panel/description
  X-Wrt style statistics panel for the 320x240 TFT found on the
- GL-BE10000 and GL-BE14000. Three swipeable pages: WAN usage,
- connected clients and WiFi status. No lock screen, no PIN, no
- weather. Borrows only the fonts from glinet-panel-ui; the two
- panel services are mutually exclusive at run time.
+ GL-BE10000 and GL-BE14000. Swipeable pages: WAN usage, system,
+ clients, ports, WAN interfaces and WiFi. No lock screen, no PIN,
+ no weather.
+
+ Self contained: it needs only the generic ucode LVGL binding and
+ ships its own Inter font set, so it does not pull in
+ glinet-panel-ui, whose ucode UI is meant for the stock firmware.
+ If both happen to be installed they are made mutually exclusive,
+ because only one process may own the DRM device.
 endef
 
 define Build/Compile
@@ -36,6 +42,11 @@ define Package/xwrt-panel/install
 	$(INSTALL_DIR) $(1)/usr/share/xwrt-panel
 	$(INSTALL_DATA) ./files/usr/share/xwrt-panel/xwrt-logo.png \
 		$(1)/usr/share/xwrt-panel/xwrt-logo.png
+	$(INSTALL_DIR) $(1)/usr/share/xwrt-panel/fonts
+	$(INSTALL_DATA) ./files/usr/share/xwrt-panel/fonts/*.bin \
+		$(1)/usr/share/xwrt-panel/fonts/
+	$(INSTALL_DATA) ./files/usr/share/xwrt-panel/fonts/OFL.txt \
+		$(1)/usr/share/xwrt-panel/fonts/
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/etc/config/xwrt_panel $(1)/etc/config/xwrt_panel
 	$(INSTALL_DIR) $(1)/etc/init.d
