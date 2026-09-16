@@ -216,6 +216,15 @@ function text_w(font, s) {
 	return font ? lv.text_width(font, s) : 7 * length(s);
 }
 
+/*
+ * Forward declarations. ucode binds a top level name at the point where it
+ * is declared, so a function that is defined above another one cannot call
+ * it: the name is captured while it is still unset and the call fails with
+ * "left-hand side is not a function". These are used before they are
+ * defined, so they are declared here and assigned further down.
+ */
+let touch_note, clients_merge_natflow, clients_sort;
+
 /* card that scrolls vertically */
 function card_new(parent) {
 	let card = lv.obj(parent);
@@ -562,7 +571,7 @@ function natflow_split(field) {
 	return length(p) > 1 ? num(p[1]) : 0;
 }
 
-function clients_merge_natflow() {
+clients_merge_natflow = function() {
 	let text = readfile(NATFLOW_USERINFO);
 
 	if (!text)
@@ -595,9 +604,9 @@ function clients_merge_natflow() {
 	}
 
 	state.clients = found;
-}
+};
 
-function clients_sort() {
+clients_sort = function() {
 	let out = [];
 
 	for (let mac, rec in state.clients ?? {})
@@ -611,7 +620,7 @@ function clients_sort() {
 	});
 
 	state.clients = out;
-}
+};
 
 /* ---- wan ----------------------------------------------------------- */
 
@@ -1279,7 +1288,7 @@ function tile_changed() {
 /* Same reason as the geometry constants above: touch_note() reads it. */
 let blanked = false;
 
-function touch_note() {
+touch_note = function() {
 	last_touch = monotonic();
 
 	if (blanked) {
@@ -1287,7 +1296,7 @@ function touch_note() {
 		backlight_set(cfg.brightness);
 		lv.touch_drop();
 	}
-}
+};
 
 function blank_check() {
 	if (!cfg.blank || blanked)

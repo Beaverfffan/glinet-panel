@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xwrt-panel
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_LICENSE:=Apache-2.0 OFL-1.1
 PKG_LICENSE_FILES:=files/usr/share/xwrt-panel/fonts/OFL.txt
