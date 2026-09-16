@@ -27,6 +27,18 @@ const W = 320;
 const H = 240;
 const POINTS = 28;
 
+/*
+ * Page geometry. These sit up here on purpose: ucode binds a top level
+ * const at the point of its declaration, so a function defined above one
+ * cannot see it at run time and dies with "access to undeclared
+ * variable". card_new() is defined well before the page builders, so
+ * BODY_Y and BODY_H have to be declared first.
+ */
+const HEAD_TOP = 11;
+const HEAD_X = 12;
+const BODY_Y = 44;
+const BODY_H = H - BODY_Y - 12;
+
 const C_SCREEN = 0x000000;
 const C_SURFACE = 0x1c1c1e;
 const C_RULE = 0x636366;
@@ -827,11 +839,6 @@ let screen, tileview;
 let clock_label;	/* text_new() wrapper */
 let last_touch;
 
-const HEAD_TOP = 11;
-const HEAD_X = 12;
-const BODY_Y = 44;
-const BODY_H = H - BODY_Y - 12;
-
 function header_new(parent, title, count) {
 	label_new(parent, F_TITLE, C_TXT, title).set({ x: HEAD_X, y: HEAD_TOP });
 
@@ -1269,6 +1276,9 @@ function tile_changed() {
 	p.update?.();
 }
 
+/* Same reason as the geometry constants above: touch_note() reads it. */
+let blanked = false;
+
 function touch_note() {
 	last_touch = monotonic();
 
@@ -1278,8 +1288,6 @@ function touch_note() {
 		lv.touch_drop();
 	}
 }
-
-let blanked = false;
 
 function blank_check() {
 	if (!cfg.blank || blanked)
