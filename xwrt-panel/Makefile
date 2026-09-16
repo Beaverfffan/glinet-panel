@@ -33,6 +33,9 @@ define Package/xwrt-panel/install
 	$(INSTALL_DIR) $(1)/usr/share/ucode/xwrt-panel
 	$(INSTALL_DATA) ./files/usr/share/ucode/xwrt-panel/panel.uc \
 		$(1)/usr/share/ucode/xwrt-panel/panel.uc
+	$(INSTALL_DIR) $(1)/usr/share/xwrt-panel
+	$(INSTALL_DATA) ./files/usr/share/xwrt-panel/xwrt-logo.png \
+		$(1)/usr/share/xwrt-panel/xwrt-logo.png
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/etc/config/xwrt_panel $(1)/etc/config/xwrt_panel
 	$(INSTALL_DIR) $(1)/etc/init.d

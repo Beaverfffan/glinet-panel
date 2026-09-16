@@ -74,8 +74,9 @@ return view.extend({
 			_('Statistics Panel Screen'),
 			_('Settings for the minimal statistics panel (xwrt-panel) '
 			  + 'of the GL-BE10000 / GL-BE14000. The panel shows WAN '
-			  + 'usage, connected clients and WiFi status. Changes '
-			  + 'are applied to /etc/config/xwrt_panel and the panel '
+			  + 'usage, system state, clients with their rate, port '
+			  + 'links, WAN interfaces and WiFi status. Changes are '
+			  + 'applied to /etc/config/xwrt_panel and the panel '
 			  + 'service is restarted on "Save & Apply".'));
 
 		/* ---- status & service control ---------------------------- */
@@ -116,6 +117,14 @@ return view.extend({
 		o.default = '0';
 		o.placeholder = '0';
 
+		o = s.option(form.Value, 'splash', _('Boot logo (s)'),
+			_('Seconds the x-wrt mark stays on the panel while the '
+			  + 'service starts up. A touch clears it right away. '
+			  + 'Set to 0 to skip the splash.'));
+		o.datatype = 'range(0,60)';
+		o.default = '3';
+		o.placeholder = '3';
+
 		o = s.option(form.Value, 'blank', _('Blank after (min)'),
 			_('Minutes without touch before the backlight turns off. '
 			  + 'Set to 0 to keep the screen always on. Any touch '
@@ -134,8 +143,30 @@ return view.extend({
 		o.enabled = '1';
 		o.disabled = '0';
 
+		o = s.option(form.Flag, 'page_system', _('System'),
+			_('CPU load, memory, SoC temperature, fan speed and '
+			  + 'uptime.'));
+		o.default = '1';
+		o.enabled = '1';
+		o.disabled = '0';
+
 		o = s.option(form.Flag, 'page_clients', _('Clients'),
-			_('List of DHCP leases and snooped clients.'));
+			_('DHCP leases and snooped clients, with the per-client '
+			  + 'rate reported by natflow.'));
+		o.default = '1';
+		o.enabled = '1';
+		o.disabled = '0';
+
+		o = s.option(form.Flag, 'page_ports', _('Ports'),
+			_('Link state and negotiated speed of every wan/lan/sfp '
+			  + 'port, with its current rate.'));
+		o.default = '1';
+		o.enabled = '1';
+		o.disabled = '0';
+
+		o = s.option(form.Flag, 'page_wan', _('WAN'),
+			_('Every WAN interface with its protocol, address and '
+			  + 'uptime. Handy with mwan3 or several uplinks.'));
 		o.default = '1';
 		o.enabled = '1';
 		o.disabled = '0';
