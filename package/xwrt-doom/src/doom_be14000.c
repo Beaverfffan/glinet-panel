@@ -38,6 +38,14 @@
 #define VIEW_W 320
 #define VIEW_H 200
 
+/* init 脚本 / screen-guard.sh 靠这个文件精确认人。
+ * ⚠️ 绝对不要用 `pgrep -x xwrt-doom` 认自己：BusyBox 的 procps 会把
+ *    `/bin/sh /etc/rc.common /etc/init.d/xwrt-doom start` 这种进程的 comm
+ *    也报成 "xwrt-doom"，于是 init 脚本会把自己当 doom —— 实测后果是
+ *    init 里的 kill_doom() 拿 SIGTERM 打中正在跑 start_service 的那个 shell，
+ *    procd_open_instance 根本没执行（"服务说启动了，屏幕上什么都没有"）。 */
+#define PIDFILE "/var/run/xwrt-doom.pid"
+
 /* ── 配置 ─────────────────────────────────────────────────────── */
 struct opts {
 	const char *wad;
@@ -72,6 +80,9 @@ static unsigned long drawn_;
 static double t_start_;
 static long ms_start_;
 static double t_last_frame_;
+/* SPI 计数器是**自开机累计**的绝对值，判"本次上了几帧"必须减掉起始快照。
+ * 不减的话会印出 1.8e10 B ⇒ 122100 帧 (4686 fps) 这种荒唐数字（踩过）。 */
+static unsigned long spi_start_;
 
 /* ── 性能分项计时 ──────────────────────────────────────────────
  * 只印一次平均值的"体检报告"。分三项是为了分清瓶颈到底在谁身上：
@@ -251,6 +262,7 @@ void DG_Init(void)
 
 	t_start_ = now_s();
 	t_last_frame_ = t_start_;
+	spi_start_ = panel_out_spi_bytes();	/* 后面算"本次上了几帧"要减它 */
 	{
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -260,6 +272,14 @@ void DG_Init(void)
 	signal(SIGINT, on_signal);
 	signal(SIGTERM, on_signal);
 	signal(SIGPIPE, SIG_IGN);
+
+	{
+		FILE *f = fopen(PIDFILE, "w");
+		if (f) {
+			fprintf(f, "%d\n", (int)getpid());
+			fclose(f);
+		}
+	}
 
 	fprintf(stderr, "  [cfg] fps=%d view=%s stats=%d touch_test=%d no_submit=%d "
 		"spin_sleep=%d wad=%s\n",
@@ -423,13 +443,18 @@ void DG_SetWindowTitle(const char *title)
 static void cleanup(void)
 {
 	double el = now_s() - t_start_;
-	unsigned long spi = panel_out_spi_bytes();
+	unsigned long spi_now = panel_out_spi_bytes();
+	/* ⚠️ SPI 计数器是**自开机累计**的绝对值，必须减掉起始快照。
+	 * 不减的话会印出 `SPI 累计 18755952392 B ⇒ 122100.3 帧 (4686.2 fps)`
+	 * 这种夸张的假数字（真机上踩过），把人往错误方向带。 */
+	unsigned long spi = spi_now - spi_start_;
 
 	fprintf(stderr,
-		"==== 提交 %lu 帧 / %.2fs = %.2f fps；SPI 累计 %lu B "
-		"⇒ 实际推上屏 %.1f 帧 (%.1f fps)\n",
+		"==== 提交 %lu 帧 / %.2fs = %.2f fps；本会话 SPI Δ %lu B "
+		"⇒ 实际推上屏 %.1f 帧 (%.1f fps)\n"
+		"     （SPI 绝对值 %lu B，减掉起始快照 %lu B 才是本次的量）\n",
 		drawn_, el, el > 0 ? drawn_ / el : 0, spi, spi / 153611.0,
-		el > 0 ? spi / 153611.0 / el : 0);
+		el > 0 ? spi / 153611.0 / el : 0, spi_now, spi_start_);
 
 	if (pf_calls)
 		fprintf(stderr,
@@ -451,6 +476,7 @@ static void cleanup(void)
 			gametic, el, gametic / el);
 	tin_close();
 	panel_out_close();
+	unlink(PIDFILE);
 }
 
 /* ── main ─────────────────────────────────────────────────────── */
@@ -460,7 +486,8 @@ static void usage(const char *p)
 "用法: %s [选项] [Doom 参数...]\n"
 "  --wad <路径>        IWAD（默认 /usr/share/xwrt-doom/doom1.wad）\n"
 "  --touch-dev <路径>  触摸设备，默认 auto（按能力自动找）\n"
-"  --fps <n>           上屏帧率上限，默认 30（SPI 52MHz 上限约 42）\n"
+"  --fps <n>           上屏帧率上限，默认 0 = 不限制\n"
+"                     （实际上限由 SPI 带宽定，单帧 153,611 B @52MHz ≈ 23.6ms ⇒ 约 36~38fps）\n"
 "  --view reserve|stretch  reserve=底部 40 行留给控制条（默认）；stretch=拉伸铺满 4:3\n"
 "  --stats             左上角叠一行帧率\n"
 "  --touch-test        触摸标定模式：全屏十字准星跟着手指\n"

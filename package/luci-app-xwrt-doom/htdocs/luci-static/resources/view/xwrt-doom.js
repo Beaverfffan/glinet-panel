@@ -89,10 +89,26 @@ return view.extend({
 					[_('触摸设备'), st.touch_dev || '-'],
 					[_('手感'), _('死区 %s px / 半径 %s px / 轻点 %s ms / 脉冲 %s ms')
 						.format(st.deadzone, st.radius, st.tap_ms, st.pulse_ms)],
-					[_('DRM 占用'), _('%s 个客户端（含本机 doom 与面板服务）')
-						.format(st.drm_clients)],
+					[_('面板服务'), st.panel_running === '1'
+						? _('运行中 —— 它和 Doom 抢同一块 DRM plane')
+						: _('已停（Doom 独占 DRM）')],
+					[_('DRM 占用'), (st.drm_clients || '').replace(/\s+$/, '') || _('(空)')],
 					[_('错误'), st.error ? st.error : '-']
 				];
+
+				/*
+				 * 三条最容易踩的现场诊断。都是真机踩出来的，不是防御性代码：
+				 *   · 面板和 doom 同时在跑 ⇒ 抢 DRM master，屏上纹丝不动，
+				 *     而且面板空转恰好也是 153,611 B/s，SPI 计数会骗人；
+				 *   · 说有 pid 但进程其实是 /etc/init.d/xwrt-doom 自己
+				 *     （BusyBox 把 rc.common 包装的 comm 报成脚本 basename），
+				 *     已在 init 里改成锚定 ^/usr/bin/xwrt-doom；
+				 *   · 没有 IWAD 时 init 会拒绝启动。
+				 */
+				if (st.running === '1' && st.panel_running === '1')
+					rows.push([_('提示'), _('面板服务还在跑 —— 屏上大概率不动。先「停止」再「启动」，或执行 /etc/init.d/xwrt-panel stop 后 kill -9 残留的 ucode（它带 procd respawn，只 kill 不 stop 会被拉回来）。')]);
+				if (st.running === '1' && (st.drm_clients || '').indexOf('xwrt-doom') < 0)
+					rows.push([_('提示'), _('Doom 在跑但 DRM 客户端里没有它 —— 它没拿到 master，画面不会更新。')]);
 
 				body.replaceChildren.apply(body, rows.map(function (r) {
 					return E('tr', { 'class': 'tr' }, [

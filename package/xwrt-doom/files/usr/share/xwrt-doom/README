@@ -4,7 +4,8 @@
 屏幕：320x240 `panel-mipi-dbi`（ST7789P3 系）@ SPI0 52 MHz
 触摸：Hynitron CST353X 电容屏（**单点**），`/dev/input/event0`
 
-实测：**320x240 RGB565 上屏 36.3 fps**（30 秒 1087 帧，SPI 计数器逐帧吻合）。
+实测：**320x240 RGB565 上屏 36.0 fps**（独占 DRM master 时逐秒稳定
+`Δ = 5,529,996 B = 36 × 153,611 B`；这是 SPI 带宽上限，不是 CPU 上限）。
 
 ---
 
@@ -23,8 +24,15 @@
 校验一份 shareware doom1.wad 是否正确：
 
 ```
-大小 4,196,020 字节    md5 f0cefca49926d00903cf57551d901ab
+大小 4,196,020 字节    md5 f0cefca49926d00903cf57551d901abe
 ```
+
+> ⚠️ `xwrt-doom-get-wad` 三个下载器一律带「不校验证书」。这不是偷懒：实测这台
+> 机器的 TLS 信任链本身是坏的（`ca-bundle` 与 `libustream-mbedtls` 都在，但
+> `uclient-fetch` 访问 github **和** downloads.openwrt.org 都报
+> `certificate is self-signed or not signed by a trusted CA`），是**全局**问题
+> 而不是 GitHub 特例。脚本用固定的「字节数 + md5」双重校验兜底。
+> 如果 https 实在走不通，可以在 PC 上下好再拷过去。
 
 ## 2. 起停
 
@@ -99,6 +107,65 @@ cat /sys/class/spi_master/spi0/statistics/bytes
 
 ⚠️ 不要去看 `/dev/fb0` —— 它恒为全 0，是**假信号**。
 ⚠️ 一次全帧提交 = **+153,611 字节**，用它反算真实上屏帧数。
+
+**★ 最坑的判据陷阱：面板空转恰好也是每秒 +153,611 B（1 fps）。**
+所以「SPI 在涨」**不足以**证明 Doom 在跑。要这样看：
+
+| SPI 增长速度 | 含义 |
+|---|---|
+| 约 **+153,611 B/s**（1 fps） | 面板 ucode 在空转 —— Doom 根本没拿到 master |
+| 约 **+5,530,000 B/s**（36 fps） | Doom 在正常上屏 |
+
+一眼判据：`cat /sys/kernel/debug/dri/0/clients`，看 `xwrt-doom` 那行的
+`master` 列是不是 `y`。
+
+**★ 面板服务为什么会自己回来（两个机制，缺一不可）**
+
+```sh
+/etc/init.d/xwrt-panel stop     # ← 必须！注销 procd 实例
+for p in $(pgrep -f 'xwrt-panel/panel.uc'); do kill -9 $p; done
+```
+
+1. `xwrt-panel` 自带 `procd_set_param respawn`（`retry=5`）——**只要 procd 里那个
+   实例还在，杀掉 ucode 5 秒后必被拉回来**。`disable` 只删 `/etc/rc.d` 软链，
+   **不注销**已注册的实例，单独用它没用。
+2. `/etc/init.d/xwrt-media` 的收尾动作会顺手 `/etc/init.d/xwrt-panel start`。
+
+而且 `panel.uc` 在 procd 的 `term_timeout`（5 s）内不退，procd 日志里那句
+`not stopped on SIGTERM, sending SIGKILL instead` 就是它 —— 所以手工清场一律
+`kill -9`。
+
+init 脚本里的 `panel_stop()` 做的正是「停服务 → 杀进程 → 轮询
+`dri/0/clients` 确认 master 真空出来」，起 Doom 前会等它返回。
+
+**★ 别用 `pgrep -x xwrt-doom` 认进程（BusyBox 的坑）**
+
+BusyBox 的 procps 会把 `/bin/sh /etc/rc.common /etc/init.d/<脚本> <动作>`
+这种进程的 comm **报成脚本的 basename**，于是 `/etc/init.d/xwrt-doom start`
+自己就"叫 xwrt-doom"：
+
+```
+$ pgrep -x xwrt-doom            # 真机上实测
+32175                            # ← 这是 init 脚本自己！
+  comm=[xwrt-doom]  cmd=[/bin/sh /etc/rc.common /tmp/xwrt-doom start]
+```
+
+后果有两个，第二个是致命的：
+
+1. `xwrt-doom status` 里 `running=` 永远是 1 —— **状态文件长期说谎**；
+2. init 里的 `kill_doom()` 会 **SIGTERM 打中正在跑 `start_service` 的那个 shell**，
+   `procd_open_instance` 根本没执行 ⇒ 症状是「服务说启动了、屏幕上什么都没有」，
+   而且日志里连一行 `start` 都不打。
+
+正确写法是**锚定绝对路径**（`^` 锚住 cmdline 开头，任何 `sh -c "…"` /
+rc.common 包装层都不会误命中）：
+
+```sh
+pgrep -f '^/usr/bin/xwrt-doom'
+```
+
+本包三处（init 的 `doom_pids()`、`screen-guard.sh`、以及 doom 自己在
+`DG_Init` 里写的 `/var/run/xwrt-doom.pid`）都是这么做的。
 
 **日志**：`logread | grep xwrt-doom`，以及 procd 直接抓走的 stdout/stderr
 （`logread` 里能看到引擎自己的 `==== 提交 N 帧 / T 秒` 收尾统计）。

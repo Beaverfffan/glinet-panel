@@ -24,7 +24,8 @@ GL-BE10000 / GL-BE14000 机身 TFT 屏幕在 OpenWrt / X-Wrt 上的支持。
   `dcb7a8dbc7a16ce3dda29382ac9aae9d77d21284`
 - 硬件：320×240 `panel-mipi-dbi`（ST7789P3 系）@ SPI0 52 MHz；触摸是
   Hynitron CST353X 电容屏（**只有单点**）
-- 实测：**36.3 fps 上屏**（30 秒 1087 帧，SPI 计数器逐帧吻合），
+- 实测：**36.0 fps 上屏**（`--fps 0` 时 26.02 秒 937 帧，引擎自己的计数与 SPI 计数器
+  算出来的 937.0 帧**逐帧吻合**），
   game tic 33.7 Hz（标称 35 Hz 的 96%）
 - 只依赖 `libdrm`；二进制 550 KB
 
@@ -75,7 +76,10 @@ CST353X 只上报一个触点，所以手指按着 `FIRE` 就没办法同时滑�
 
 画面区左半屏拖动 = 移动/平移，右半屏拖动 = 转向。
 
-## 4. 三个踩过的坑（都写在代码注释里了）
+## 4. 六个踩过的坑（都写在代码注释里了）
+
+前三个是"怎么让它跑起来"，后三个是"跑起来了但屏上什么都没有"——
+**后三个全部不报错、不崩溃、日志安静**，只看屏幕和 `ps` 是查不出来的。
 
 **① `D_DoomLoop()` 不是死循环。** 它只做一次"起搏"就返回，无限循环必须由
 平台层的 `main()` 自己驱动。漏掉它的症状极具迷惑性：一切初始化正常、第一帧
@@ -89,13 +93,50 @@ CST353X 只上报一个触点，所以手指按着 `FIRE` 就没办法同时滑�
 
 **③ DRM master 竞态。** 面板服务 / 媒体播放器和 Doom 抢同一块 DRM plane。
 没拿到 master 时 legacy ioctl 全部 EACCES —— **进程照跑、日志一句错都不报、
-屏上纹丝不动**。判据只有 SPI 计数器
-（`/sys/class/spi_master/spi0/statistics/bytes`，一次全帧提交 = +153,611 字节）。
-`/dev/fb0` 恒为全 0，是假信号。
+屏上纹丝不动**。`/dev/fb0` 恒为全 0，是假信号。
 
-顺带两条：`stop` 服务还不够 —— 面板会被别的 procd 实例 respawn 回来，所以
-包里带了个 `screen-guard.sh` 在 Doom 运行期间盯着；以及别用 `pkill`，
-BusyBox 上可能没有这个 applet，而重定向掉 stderr 之后"停止"会假装成功。
+**④ `pgrep -x xwrt-doom` 会命中 `/etc/init.d/xwrt-doom` 自己。**
+BusyBox 的 procps 把 `/bin/sh /etc/rc.common /etc/init.d/<脚本> <动作>` 这种进程的
+comm **报成脚本的 basename**，于是 init 脚本"自己就叫 xwrt-doom"。真机实测：
+
+```
+$ /tmp/xwrt-doom start &            # 一个同名的最小 rc.common 脚本
+$ pgrep -x xwrt-doom
+32175   comm=[xwrt-doom]  cmd=[/bin/sh /etc/rc.common /tmp/xwrt-doom start]
+        # 换成任意 basename 都原样复现（对照组 zzprobe）
+```
+
+后果有两个：状态文件里的 `running=` **永远为 1**；更要命的是
+`start_service()` 里的 `kill_doom()` 会 **SIGTERM 打中正在执行它的那个 shell
+自己**，`procd_open_instance` 根本没跑到 —— 症状就是
+「**服务说启动了、屏上什么都没有，日志里连一行 start 都不打**」。
+改用**锚定绝对路径** `pgrep -f '^/usr/bin/xwrt-doom'`（真机对照：`pgrep -x`
+给出 `435 493` 两个，锚定给出 `435` 一个），再让 Doom 自己写
+`/var/run/xwrt-doom.pid` 作第二道保险。
+
+**⑤ 只 `stop` 面板还不够：它带 procd `respawn`，而 `disable` 不注销实例。**
+`ubus call service list '{"name":"xwrt-panel"}'` 里能看到 `respawn{retry=5}` ——
+只要 procd 里那个 instance 还在，**杀掉 ucode 5 秒后必被拉回来**；
+`disable` 只删 `/etc/rc.d` 软链，**不注销**已注册的实例。而且 `panel.uc` 在
+procd 的 `term_timeout` 内不退（日志里那句 `not stopped on SIGTERM, sending
+SIGKILL instead` 就是它），所以手工清场一律 `kill -9`。
+init 里的 `panel_stop()` 现在是「停服务 → `kill -9` → 轮询 `dri/0/clients`
+确认 master 真空出来」三步，起 Doom 前会等它返回。
+
+**⑥ ★ 面板空转刷新恰好也是 +153,611 B/s（1 fps）。**
+于是 ③ 里"SPI 在涨 ⇒ 帧到了玻璃上"这条判据**会骗人**：
+
+| SPI 增长 | 含义 |
+|---|---|
+| 约 **+153,611 B/s**（1 fps） | 面板在空转 —— Doom 根本没拿到 master |
+| 约 **+5,530,000 B/s**（36 fps） | Doom 正常上屏 |
+
+一眼判据仍然是 `cat /sys/kernel/debug/dri/0/clients`，看 `xwrt-doom` 那行的
+`master` 列是不是 `y`。另外 SPI 计数器是**自开机累计**的绝对值，算"本次上了几帧"
+必须减起始快照 —— 忘了减会印出 `122100 帧 (4686 fps)` 这种荒唐数字。
+
+再顺带一条：别用 `pkill`，BusyBox 上可能没有这个 applet，而重定向掉 stderr
+之后"停止"会假装成功。
 
 ## 5. 代码在哪
 

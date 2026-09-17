@@ -69,14 +69,21 @@ float panel_out_spi_frames(void)
 }
 
 /* 面板（LVGL/ucode）和我们在抢同一张 DRM 卡。没有 master ⇒ legacy ioctl 全 EACCES，
- * 进程照跑、日志不喊、屏上纹丝不动。所以先抢，抢不到就等。 */
+ * 进程照跑、日志不喊、屏上纹丝不动。所以先抢，抢不到就等。
+ *
+ * ⚠️ 这里等到超时**不退出**：`panel_out_submit()` 每一帧都还会重试 drmSetMaster，
+ *    所以只要面板后来被清掉（init 的 panel_stop / screen-guard），游戏自己会接上。
+ *    但如果是手工前台起 doom，看到这条 warn 就得去 `/etc/init.d/xwrt-panel stop`。
+ *    实测：面板 ucode 占着 master 时，SPI 仍然每秒稳定 +153,611 B ——
+ *    那是**面板自己的空转刷新**，极容易误判成"doom 在跑"。
+ *    真 doom 在跑是 +153,611 × 36/s。 */
 static int take_master(void)
 {
 	int i;
 
 	if (drmSetMaster(fd_) == 0)
 		return 0;
-	for (i = 0; i < 40; i++) {
+	for (i = 0; i < 100; i++) {
 		struct timespec ts = { 0, 100 * 1000 * 1000 };
 		nanosleep(&ts, NULL);
 		if (drmSetMaster(fd_) == 0) {
@@ -84,9 +91,14 @@ static int take_master(void)
 				(i + 1) / 10.0);
 			return 0;
 		}
+		if (i == 9)
+			fprintf(stderr, "  [drm] 还在等 DRM master……面板服务占着，"
+				"/etc/init.d/xwrt-panel stop 一下最快\n");
 	}
-	fprintf(stderr, "  [drm] warn: 拿不到 DRM master —— 面板服务还在跑，"
-			"先执行 /etc/init.d/xwrt-panel stop\n");
+	fprintf(stderr, "  [drm] warn: 等 10s 没拿到 DRM master —— 面板服务（xwrt-panel，"
+		"带 procd respawn）还在跑。\n"
+		"       处置：/etc/init.d/xwrt-panel stop  然后 kill -9 掉残留的 ucode；\n"
+		"       只 kill 不 stop 的话 procd 5 秒后会把它拉回来（respawn retry=5）。\n");
 	return -1;
 }
 
@@ -245,7 +257,7 @@ uint16_t *panel_out_backbuf(void)
 int panel_out_submit(void)
 {
 	static unsigned long fails_;
-	int k;
+	int k, last_e = 0;
 
 	for (k = 0; k < 6; k++) {
 		int rc = -1, e = 0;
@@ -278,12 +290,14 @@ int panel_out_submit(void)
 			frames_++;
 			return 0;
 		}
+		last_e = e;
 		/* EACCES/EPERM = master 被别人抢了；EAGAIN/EBUSY = 上一帧还没
 		 * flip 完（面板驱动在 ioctl 里同步等 SPI 吐完整帧，启动头几帧
 		 * 和超速提交时都会撞上）。这两类都值得等一下再试。 */
 		if (e != EACCES && e != EPERM && e != EAGAIN && e != EBUSY)
 			break;
 		if (e == EACCES || e == EPERM) {
+			/* 面板一死，这一句就会成功，游戏自己接上 */
 			drmSetMaster(fd_);
 			{
 				struct timespec ts = { 0, 150 * 1000 * 1000 };
@@ -294,9 +308,12 @@ int panel_out_submit(void)
 			nanosleep(&ts, NULL);
 		}
 	}
+	/* ⚠️ 这里必须打 last_e。打 errno 会印出 nanosleep 留下的残留值 ——
+	 * 见过"commit 失败: Resource busy"其实是 EACCES 的误报。 */
 	if (fails_++ < 5)
-		fprintf(stderr, "  [drm] !! commit 失败 @%lu: %s%s\n", frames_,
-			strerror(errno), fails_ == 5 ? "（后续同类失败不再打印）" : "");
+		fprintf(stderr, "  [drm] !! commit 失败 @%lu: %s (%d)%s\n", frames_,
+			strerror(last_e), last_e,
+			fails_ == 5 ? "（后续同类失败不再打印）" : "");
 	return -1;
 }
 

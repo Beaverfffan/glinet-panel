@@ -11,10 +11,31 @@
 #   xwrt-doom-get-wad /root/doom1.wad  # 指定落点
 #   URL=... xwrt-doom-get-wad          # 换源
 #
+# ─────────────────────────────────────────────────────────────────────────
+# ⚠️ 为什么三个下载器一律加「不校验证书」：这台机器的 TLS 信任链本身是坏的，
+#    不是我们偷懒。真机实测（2026-09-17）：
+#      ca-bundle-20260816-r1 / libustream-mbedtls / uclient-fetch 都已安装，但
+#        uclient-fetch https://raw.githubusercontent.com/.../doom1.wad
+#          ⇒ SSL verify error: certificate is self-signed or not signed by a trusted CA
+#        uclient-fetch https://downloads.openwrt.org/.versions.json
+#          ⇒ 同一条错误
+#    连 OpenWrt 官方源都过不去 ⇒ 是**全局**校验问题，不是 GitHub 特例。
+#    加 --no-check-certificate 后同一 URL 稳定拿到 4,196,020 字节。
+#    兜底：下载完用「固定字节数 + 固定 md5」双重校验，被换掉的文件过不了这关。
+# ─────────────────────────────────────────────────────────────────────────
+#
 DEST=${1:-/usr/share/xwrt-doom/doom1.wad}
 URL=${URL:-https://raw.githubusercontent.com/Akbar30Bill/DOOM_wads/master/doom1.wad}
 EXPECT_BYTES=4196020
 EXPECT_MD5=f0cefca49926d00903cf57551d901abe
+
+# 文件大小：有些 BusyBox 的 stat 不吃 -c，退回 wc -c
+fsize() {
+	local n
+	n=$(stat -c%s "$1" 2>/dev/null)
+	[ -n "$n" ] || n=$(wc -c < "$1" 2>/dev/null)
+	echo "${n:-0}"
+}
 
 # 找一个能用的下载器。x-wrt 自带 uclient-fetch；busybox 的 wget 也行。
 FETCH=''
@@ -35,19 +56,32 @@ mkdir -p "$DIR" || exit 1
 TMP="$DEST.part"
 
 echo "== 下载 =="
-echo "  源  : $URL"
-echo "  落点: $DEST"
+echo "  源    : $URL"
+echo "  落点  : $DEST"
 echo "  下载器: $FETCH"
 case "$FETCH" in
-	uclient-fetch) uclient-fetch -O "$TMP" "$URL" || { rm -f "$TMP"; exit 1; } ;;
-	wget)          wget -O "$TMP" "$URL" || { rm -f "$TMP"; exit 1; } ;;
-	curl)          curl -fL -o "$TMP" "$URL" || { rm -f "$TMP"; exit 1; } ;;
+	uclient-fetch)
+		uclient-fetch --no-check-certificate -O "$TMP" "$URL" \
+			|| { rm -f "$TMP"; exit 1; }
+		;;
+	wget)
+		# busybox 的 wget 可能不认这个长选项，认不出就退回裸调用
+		wget --no-check-certificate -O "$TMP" "$URL" 2>/dev/null \
+			|| wget -O "$TMP" "$URL" \
+			|| { rm -f "$TMP"; exit 1; }
+		;;
+	curl)
+		curl -k -fL -o "$TMP" "$URL" || { rm -f "$TMP"; exit 1; }
+		;;
 esac
 
-SZ=$(stat -c%s "$TMP" 2>/dev/null)
+SZ=$(fsize "$TMP")
 if [ "$SZ" != "$EXPECT_BYTES" ]; then
 	echo "!! 大小不对：拿到 $SZ 字节，期望 $EXPECT_BYTES" >&2
-	echo "   （有些镜像会把 HTML 错误页存下来，所以这里必须挡住）" >&2
+	echo "   （镜像常把 HTML 错误页存下来，所以这里必须挡住）" >&2
+	echo "   如果这台机器 https 走不通，可以先在 PC 上下好，再 scp 到 $DEST：" >&2
+	echo "     curl -L -o doom1.wad $URL" >&2
+	echo "     scp doom1.wad root@<路由器>:$DEST" >&2
 	rm -f "$TMP"
 	exit 1
 fi
