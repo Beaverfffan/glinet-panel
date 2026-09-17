@@ -1,0 +1,65 @@
+#!/bin/sh
+#
+# xwrt-doom-get-wad —— 把 shareware 版 Doom 的 IWAD 取到 /usr/share/xwrt-doom/
+#
+# doom1.wad（Episode 1: Knee-Deep in the Dead）是 id Software 免费分发的
+# shareware 版，可以自由再分发。想要完整三章请自备 doom.wad，想要完全自由的
+# 资源请用 Freedoom 的 freedoom1.wad（改一下 /etc/config/xwrt_doom 的 wad 即可）。
+#
+# 用法：
+#   xwrt-doom-get-wad                  # 下到默认位置
+#   xwrt-doom-get-wad /root/doom1.wad  # 指定落点
+#   URL=... xwrt-doom-get-wad          # 换源
+#
+DEST=${1:-/usr/share/xwrt-doom/doom1.wad}
+URL=${URL:-https://raw.githubusercontent.com/Akbar30Bill/DOOM_wads/master/doom1.wad}
+EXPECT_BYTES=4196020
+EXPECT_MD5=f0cefca49926d00903cf57551d901abe
+
+# 找一个能用的下载器。x-wrt 自带 uclient-fetch；busybox 的 wget 也行。
+FETCH=''
+for c in uclient-fetch wget curl; do
+	if command -v "$c" >/dev/null 2>&1; then
+		FETCH=$c
+		break
+	fi
+done
+if [ -z "$FETCH" ]; then
+	echo "xwrt-doom-get-wad: 机器上没有 uclient-fetch / wget / curl，下载不了" >&2
+	echo "请在 PC 上下好 doom1.wad 再 scp 到 $DEST" >&2
+	exit 1
+fi
+
+DIR=$(dirname "$DEST")
+mkdir -p "$DIR" || exit 1
+TMP="$DEST.part"
+
+echo "== 下载 =="
+echo "  源  : $URL"
+echo "  落点: $DEST"
+echo "  下载器: $FETCH"
+case "$FETCH" in
+	uclient-fetch) uclient-fetch -O "$TMP" "$URL" || { rm -f "$TMP"; exit 1; } ;;
+	wget)          wget -O "$TMP" "$URL" || { rm -f "$TMP"; exit 1; } ;;
+	curl)          curl -fL -o "$TMP" "$URL" || { rm -f "$TMP"; exit 1; } ;;
+esac
+
+SZ=$(stat -c%s "$TMP" 2>/dev/null)
+if [ "$SZ" != "$EXPECT_BYTES" ]; then
+	echo "!! 大小不对：拿到 $SZ 字节，期望 $EXPECT_BYTES" >&2
+	echo "   （有些镜像会把 HTML 错误页存下来，所以这里必须挡住）" >&2
+	rm -f "$TMP"
+	exit 1
+fi
+
+MD5=$(md5sum "$TMP" 2>/dev/null | cut -d' ' -f1)
+if [ "$MD5" != "$EXPECT_MD5" ]; then
+	echo "!! md5 不匹配：拿到 $MD5，期望 $EXPECT_MD5" >&2
+	rm -f "$TMP"
+	exit 1
+fi
+
+mv "$TMP" "$DEST" || exit 1
+echo "== OK =="
+echo "  $DEST  $SZ 字节  md5=$MD5"
+echo "  接着：/etc/init.d/xwrt-doom start   （或去 LuCI: 服务 -> 屏幕上的 Doom）"

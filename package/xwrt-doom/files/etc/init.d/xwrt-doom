@@ -1,0 +1,199 @@
+#!/bin/sh /etc/rc.common
+#
+# xwrt-doom —— 机身小屏上的触屏 Doom
+#
+# 与面板服务（xwrt-panel）和媒体播放（xwrt-media）**互斥**：三者抢同一块 DRM
+# plane，谁没拿到 master 就只是安静地白跑 —— legacy ioctl 全 EACCES，进程
+# 照跑、日志不喊、屏上纹丝不动。所以启动前先停它们，退出后再拉回来。
+#
+# ⚠️ 只停一次是不够的：实测 stop 之后 ucode 面板还会被别的 procd 实例
+#    （xwrt-media 的循环外壳）或 respawn 拉回来，把 master 抢走。症状是
+#    **doom 正常运行、SPI 计数不涨、屏上还是面板画面**。所以 Doom 活着的时候
+#    挂一个守卫（screen-guard.sh），每秒清一次面板进程。
+#
+# ⚠️ 故意**不设** procd_set_param respawn：玩家是用屏幕上那个红色的 EXIT
+#    正常退出的，respawn 会把它立刻拉起来，屏上就"退不掉"了。需要崩溃自愈
+#    的话自己加回去。
+#
+START=96
+STOP=8
+USE_PROCD=1
+
+STATUS=/var/run/xwrt-doom.status
+DOOM=/usr/bin/xwrt-doom
+GUARD=/usr/share/xwrt-doom/screen-guard.sh
+PANEL_UC='xwrt-panel/panel.uc'
+
+ENABLED=0
+WAD=/usr/share/xwrt-doom/doom1.wad
+FPS=0
+VIEW=reserve
+TOUCH_DEV=auto
+SWAP=0
+INVX=0
+INVY=0
+DZ=12
+RAD=40
+TAP=220
+PULSE=120
+STOP_PANEL=1
+RESTORE_PANEL=1
+BRIGHT=100
+STATS=0
+EXTRA=''
+
+load_cfg() {
+	config_load xwrt_doom
+	config_get ENABLED       main enabled       0
+	config_get WAD           main wad           /usr/share/xwrt-doom/doom1.wad
+	config_get FPS           main fps           0
+	config_get VIEW          main view          reserve
+	config_get TOUCH_DEV     main touch_dev     auto
+	config_get SWAP          main swap_xy       0
+	config_get INVX          main invert_x      0
+	config_get INVY          main invert_y      0
+	config_get DZ            main deadzone      12
+	config_get RAD           main radius        40
+	config_get TAP           main tap_ms        220
+	config_get PULSE         main pulse_ms      120
+	config_get STOP_PANEL    main stop_panel    1
+	config_get RESTORE_PANEL main restore_panel 1
+	config_get BRIGHT        main brightness    100
+	config_get STATS         main stats         0
+	config_get EXTRA         main extra_args    ''
+}
+
+write_status() {
+	local run=0 pid sz=0 clients=0
+
+	pid=$(pgrep -x xwrt-doom 2>/dev/null | head -1)
+	[ -n "$pid" ] && run=1
+	[ -f "$WAD" ] && sz=$(stat -c%s "$WAD" 2>/dev/null)
+	clients=$(wc -l < /sys/kernel/debug/dri/0/clients 2>/dev/null)
+
+	{
+		echo "running=$run"
+		echo "pid=$pid"
+		echo "enabled=$ENABLED"
+		echo "wad=$WAD"
+		echo "wad_bytes=${sz:-0}"
+		echo "fps=$FPS"
+		echo "view=$VIEW"
+		echo "touch_dev=$TOUCH_DEV"
+		echo "deadzone=$DZ"
+		echo "radius=$RAD"
+		echo "tap_ms=$TAP"
+		echo "pulse_ms=$PULSE"
+		echo "stop_panel=$STOP_PANEL"
+		echo "brightness=$BRIGHT"
+		echo "drm_clients=$clients"
+		echo "hostname=$(cat /proc/sys/kernel/hostname 2>/dev/null)"
+		[ -s "$WAD" ] || echo "error=wad_not_found"
+	} > "$STATUS".tmp 2>/dev/null
+	mv "$STATUS".tmp "$STATUS" 2>/dev/null
+}
+
+panel_start() {
+	[ -x /etc/init.d/xwrt-panel ] || return 0
+	/etc/init.d/xwrt-panel start >/dev/null 2>&1
+}
+
+#
+# ⚠️ 不要用 pkill —— BusyBox 上**可能没有这个 applet**（实测 GL-BE14000 上
+#    `pkill: not found`，rc=127）。一旦我们又把 stderr 重定向掉，"停止"就会
+#    看起来成功、实际什么都没做，Doom 继续当孤儿进程占着 DRM plane。
+#    一律用 pgrep + kill（skill panel-video-playback 里记过这条）。
+#
+#    screen-guard.sh 里也是同一个理由。
+#
+kill_doom() {
+	local p
+
+	for p in $(pgrep -x xwrt-doom 2>/dev/null); do kill "$p" 2>/dev/null; done
+	sleep 1
+	for p in $(pgrep -x xwrt-doom 2>/dev/null); do kill -9 "$p" 2>/dev/null; done
+	return 0
+}
+
+# 只杀 xwrt-panel 那个 ucode（按命令行精确匹配），不要 killall ucode：
+# 系统里可能有别的 ucode 用户。
+kill_panel() {
+	local p
+
+	for p in $(pgrep -f "$PANEL_UC" 2>/dev/null); do kill "$p" 2>/dev/null; done
+	for p in $(pgrep -x xwpmplay 2>/dev/null); do kill "$p" 2>/dev/null; done
+	return 0
+}
+
+set_backlight() {
+	local b=/sys/class/backlight/backlight max
+
+	[ "$BRIGHT" = "0" ] && return 0
+	[ -w "$b/brightness" ] || return 0
+	max=$(cat "$b/max_brightness" 2>/dev/null)
+	[ -n "$max" ] || return 0
+	echo $((max * BRIGHT / 100)) > "$b/brightness" 2>/dev/null
+	return 0
+}
+
+start_service() {
+	load_cfg
+
+	if [ "$ENABLED" != "1" ]; then
+		logger -t xwrt-doom "disabled (/etc/config/xwrt_doom: enabled=0)"
+		write_status
+		# ⚠️ 这里不能开一个假实例（比如跑 sleep）来占位：procd 会把同名实例
+		#    当"已在运行"，之后改了配置再 start 它不会换成真正的命令，表现
+		#    就是"服务说启动了但屏幕上什么都没有"。
+		return 0
+	fi
+
+	if [ ! -s "$WAD" ]; then
+		logger -t xwrt-doom "IWAD not found: $WAD (run xwrt-doom-get-wad)"
+		write_status
+		return 1
+	fi
+
+	local args="--wad $WAD --fps $FPS --view $VIEW --touch-dev $TOUCH_DEV"
+	args="$args --deadzone $DZ --radius $RAD --tap $TAP --pulse $PULSE"
+	[ "$SWAP" = "1" ] && args="$args --swap"
+	[ "$INVX" = "1" ] && args="$args --invert-x"
+	[ "$INVY" = "1" ] && args="$args --invert-y"
+	[ "$STATS" = "1" ] && args="$args --stats"
+	[ -n "$EXTRA" ] && args="$args $EXTRA"
+
+	# 先清场：残留的 doom / 面板 / 播放器都会让新实例拿不到 DRM master
+	kill_doom
+	local guardian=':'
+	if [ "$STOP_PANEL" = "1" ]; then
+		/etc/init.d/xwrt-media stop >/dev/null 2>&1
+		/etc/init.d/xwrt-panel stop >/dev/null 2>&1
+		kill_panel
+		[ -x "$GUARD" ] && guardian="$GUARD"
+	fi
+	set_backlight
+
+	local tail_cmd=':'
+	[ "$RESTORE_PANEL" = "1" ] && \
+		tail_cmd='/etc/init.d/xwrt-panel start >/dev/null 2>&1'
+
+	procd_open_instance
+	procd_set_param command /bin/sh -c "$guardian & $DOOM $args; rc=\$?; $tail_cmd; exit \$rc"
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	logger -t xwrt-doom "start $DOOM $args"
+	( sleep 3; write_status ) &
+}
+
+stop_service() {
+	load_cfg
+	kill_doom
+	[ "$RESTORE_PANEL" = "1" ] && panel_start
+	write_status
+}
+
+service_triggers() {
+	procd_add_reload_trigger xwrt_doom
+}

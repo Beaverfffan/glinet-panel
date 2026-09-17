@@ -1,0 +1,21 @@
+{
+	"luci-app-xwrt-doom": {
+		"description": "Grant access to the xwrt-doom touchscreen Doom service",
+		"read": {
+			"file": {
+				"/var/run/xwrt-doom.status": [ "read" ],
+				"/usr/share/xwrt-doom": [ "list" ],
+				"/usr/share/xwrt-doom/README": [ "read" ],
+				"/sys/kernel/debug/dri/0/clients": [ "read" ]
+			},
+			"uci": [ "xwrt_doom" ]
+		},
+		"write": {
+			"file": {
+				"/etc/init.d/xwrt-doom": [ "exec" ],
+				"/usr/bin/xwrt-doom-get-wad": [ "exec" ]
+			},
+			"uci": [ "xwrt_doom" ]
+		}
+	}
+}

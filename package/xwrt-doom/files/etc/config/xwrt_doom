@@ -1,0 +1,59 @@
+config doom 'main'
+	# 开机是否自动启动。默认 0：启动后整块屏（包括控制条）都归 Doom，
+	# 面板服务的用量/客户端页面会看不见。
+	option enabled '0'
+
+	# IWAD 路径。shareware 版 doom1.wad 约 4 MB，用 xwrt-doom-get-wad 下载；
+	# 也可以换成 freedoom1.wad（完全自由）或你自己的 doom1.wad。
+	option wad '/usr/share/xwrt-doom/doom1.wad'
+
+	# 上屏帧率上限。0 = 不设上限 —— 引擎每帧只烧 1.1 ms CPU，真正定速的是
+	# drmModeSetPlane 里同步等 SPI 吐完整帧的 26 ms，也就是这块屏的物理上限
+	# （约 38 fps，而 Doom 引擎本身是 35 Hz，正好够）。想省 CPU 再给 25 之类。
+	option fps '0'
+
+	# 画面版式。
+	#   reserve = 底部 40 行固定留给控制条，Doom 画面 1:1 不经插值（默认）
+	#   stretch = Doom 的 320x200 纵向拉伸 1.2 倍铺满 4:3（当年 CRT 的正确比例），
+	#             控制条半透明压在画面下缘
+	option view 'reserve'
+
+	# 触摸设备。auto = 按「有没有 ABS_X/ABS_Y」自动找，不靠设备名。
+	option touch_dev 'auto'
+
+	# 触摸轴兜底。GL-BE14000 上**不该开**：DTS 的 swapped-x-y/inverted-x-y 与
+	# 驱动 cst353x.c 内部的 RAW X 反相两层抵消，实测 evdev 的 ABS_X 直接就是
+	# 屏幕 X（0..319）、ABS_Y 就是屏幕 Y（0..239）。换机型再考虑打开。
+	option swap_xy '0'
+	option invert_x '0'
+	option invert_y '0'
+
+	# 手感参数
+	#   deadzone  摇杆死区（像素），越小越灵敏
+	#   radius    摇杆推到底的半径（像素）
+	#   tap_ms    判定为「轻点」的最长按住时间：轻点画面 = 开一枪
+	#   pulse_ms  动作键最短按住时间。Doom 读 gamekeydown[]，按下与释放落在
+	#             同一个 35 Hz tick 内等于没按过，所以至少要按住这么久。
+	option deadzone '12'
+	option radius '40'
+	option tap_ms '220'
+	option pulse_ms '120'
+
+	# 启动前停掉面板服务与媒体播放（三者抢同一块 DRM plane），
+	# 并在 Doom 运行期间阻止它们被 respawn 回来。
+	option stop_panel '1'
+
+	# Doom 退出后把面板服务拉回来。
+	option restore_panel '1'
+
+	# 运行期间把背光拉到这个百分比（0 = 不动）。
+	option brightness '100'
+
+	# 左上角叠一行实时帧率（调参用，平时关掉）。
+	option stats '0'
+
+	# 额外命令行参数，原样透传给 doomgeneric。例如：
+	#   -warp 1 1      直接进 E1M1，跳过标题画面
+	#   -skill 4       噩梦难度
+	#   -timedemo demo1  跑 demo 测速
+	option extra_args ''
