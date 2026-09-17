@@ -7,6 +7,5 @@ config panel
 	option page_system '1'
 	option page_clients '1'
 	option page_ports '1'
-	option page_wan '1'
 	option page_wifi '1'
 	# option wan_ifaces 'wan wan_2'

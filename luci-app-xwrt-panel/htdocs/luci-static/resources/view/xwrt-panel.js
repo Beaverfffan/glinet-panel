@@ -164,13 +164,6 @@ return view.extend({
 		o.enabled = '1';
 		o.disabled = '0';
 
-		o = s.option(form.Flag, 'page_wan', _('WAN'),
-			_('Every WAN interface with its protocol, address and '
-			  + 'uptime. Handy with mwan3 or several uplinks.'));
-		o.default = '1';
-		o.enabled = '1';
-		o.disabled = '0';
-
 		o = s.option(form.Flag, 'page_wifi', _('WiFi'),
 			_('Wireless networks with band, encryption and station '
 			  + 'count.'));

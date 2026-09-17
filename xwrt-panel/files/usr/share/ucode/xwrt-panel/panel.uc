@@ -1,5 +1,4 @@
 'use strict';
-
 /*
  * xwrt-panel — minimal statistics panel for the GL-BE10000 / BE14000 TFT.
  *
@@ -23,6 +22,16 @@ import * as uci from 'uci';
 import * as uloop from 'uloop';
 import { readfile, writefile, lsdir } from 'fs';
 
+/* ------------------------------------------------------------------ */
+/* 常量区 —— 所有顶层 const。
+ * ucode 在“声明点”绑定顶层名字：函数里用到【定义在它之后】的名字会在运行时
+ * 直接报 `access to undeclared variable`（当值用）或 `left-hand side is not
+ * a function`（当函数调），与调用顺序无关。所以值声明一律集中在最前面，
+ * 函数区再按「被调用者在前」排序 —— 两件事都别破坏。
+ *
+ * 改完务必跑：python3 _tools/ucode_scope_check.py panel.uc   （rc=0 才交）
+ */
+/* ------------------------------------------------------------------ */
 const W = 320;
 const H = 240;
 const POINTS = 28;
@@ -39,6 +48,31 @@ const HEAD_X = 12;
 const BODY_Y = 44;
 const BODY_H = H - BODY_Y - 12;
 
+/*
+ * 统一版式。六个页面共用这一套数字 —— 以前每页各写一份，行高、右侧数值列的
+ * x/宽度、副行偏移都略有差别，看起来就不是一套东西。
+ */
+const CARD_X = 10;
+const CARD_W = W - 20;
+const CARD_R = 12;
+const ROW_X = 16;			/* 卡片内左边界 */
+const RIGHT_EDGE = CARD_W - ROW_X;	/* 卡片内右边界 */
+const RIGHT_W = 90;			/* 右侧数值列宽 */
+const RIGHT_X = RIGHT_EDGE - RIGHT_W;
+const ROW_W = RIGHT_EDGE - ROW_X;	/* 内容宽度 */
+const ROW_TOP = 8;			/* 列表页首行 y */
+const ROW_H = 40;			/* 列表页行高 */
+const ROW_SUB = 17;			/* 副行相对主行的偏移 */
+const DOT_X = ROW_X;
+const DOT_OFF = 3;
+const DOT_S = 7;
+const TEXT_DOT_X = ROW_X + 15;		/* 有状态点时的文字 x */
+const RULE_GAP = 3;
+const GRID_TOP = 12;			/* 静态页「标签 — 数值」行起点 */
+const GRID_STEP = 26;
+const MID = 140;			/* 静态页左列右边界 */
+const CHART_Y = GRID_TOP + 78;
+const CHART_H = BODY_H - CHART_Y - 10;
 const C_SCREEN = 0x000000;
 const C_SURFACE = 0x1c1c1e;
 const C_RULE = 0x636366;
@@ -49,14 +83,33 @@ const C_RX = 0x0a6cff;
 const C_TX = 0x64d2ff;
 const C_OK = 0x32d74b;
 const C_DOWN = 0xff453a;
-
 const FONT_DIR = '/usr/share/xwrt-panel/fonts';
 const LOGO_FILE = '/usr/share/xwrt-panel/xwrt-logo.png';
 const NATFLOW_USERINFO = '/dev/natflow_userinfo_ctl';
+const state = {
+	hostname: 'openwrt',
+	clock: '',
+	wan_device: null,
+	wan_rx: null, wan_tx: null, wan_ts: null,
+	rx_total: 0, tx_total: 0,
+	rx: [], tx: [],
+	rx_rate: 0, tx_rate: 0,
+	cpu: null, cpu_prev_total: null, cpu_prev_idle: null,
+	load: null,
+	mem_total: 0, mem_avail: 0,
+	temp: null, fan: null,
+	uptime: 0,
+	ports: [],
+	clients: [],
+	wan_ifaces: [],
+	networks: []
+};
+
+const PORT_RE = /^(wan|lan[0-9]+|sfp)$/;
 
 /* ------------------------------------------------------------------ */
-/* config                                                              */
-
+/* 模块状态 —— 所有可变的顶层 let。同样必须在任何函数之前。 */
+/* ------------------------------------------------------------------ */
 let cfg = {
 	brightness: 80,
 	rotate: 0,	/* seconds, 0 = off */
@@ -67,10 +120,50 @@ let cfg = {
 	page_system: true,
 	page_clients: true,
 	page_ports: true,
-	page_wan: true,
 	page_wifi: true
 };
 
+let bl_path, bl_max = 100;
+let F_TITLE, F_BIG, F_MED, F_SMALL;
+let pages = [];		/* { name, tile, update?, poll? } */
+let dots = [];
+let active = 0;
+let screen, tileview;
+let clock_label;	/* text_new() wrapper */
+let last_touch;
+let usage = {};
+let sys_pg = {};
+let clients_pg = {};
+let ports_pg = {};
+let wifi_pg = {};
+
+/* Same reason as the geometry constants above: touch_note() reads it. */
+let blanked = false;
+
+/* splash — the x-wrt mark while the panel starts up                   */
+let splash_obj = null;
+let splash_deadline = 0;
+let touch_device = getenv('PANEL_TOUCH_DEVICE');
+let rotate_tick = 0;
+
+/* ------------------------------------------------------------------ */
+/* 函数区 —— 按「被调用者在前」拓扑排序，不是风格偏好。
+ *
+ * 顺序：
+ *   truish config_read backlight_find backlight_set face fonts_load
+ *   label_new box_new bar_new text_new text_set value_new
+ *   text_w row_dot row_rule row_main row_sub row_value
+ *   grid_row empty_new monotonic ubus_call num wan_device_read
+ *   counter_read wan_read words sys_read port_speed ports_read
+ *   natflow_split clients_merge_natflow clients_sort clients_read
+ *   band_of security_of wifi_read clock_read rate_fmt rate_short
+ *   row_rate total_fmt speed_fmt uptime_fmt header_new bar_scaled
+ *   usage_update system_update clients_update ports_update wifi_update
+ *   dots_refresh page_show touch_note card_new usage_build system_build
+ *   clients_build ports_build wifi_build tile_changed blank_check
+ *   dir_for frame_build splash_hide splash_check splash_show
+ */
+/* ------------------------------------------------------------------ */
 function truish(v) {
 	return index([ '1', 'on', 'true', 'yes', 'enabled' ], lc(v ?? '')) >= 0;
 }
@@ -99,16 +192,11 @@ function config_read() {
 					p => p != '');
 
 	for (let key in [ 'page_usage', 'page_system', 'page_clients', 'page_ports',
-			  'page_wan', 'page_wifi' ]) {
+			  'page_wifi' ]) {
 		if (g(key) != null)
 			cfg[key] = truish(g(key));
 	}
 }
-
-/* ------------------------------------------------------------------ */
-/* backlight                                                           */
-
-let bl_path, bl_max = 100;
 
 function backlight_find() {
 	for (let d in lsdir('/sys/class/backlight') ?? []) {
@@ -130,9 +218,7 @@ function backlight_set(pct) {
 		  sprintf('%d', int(bl_max * pct / 100)));
 }
 
-/* ------------------------------------------------------------------ */
 /* fonts / widgets                                                     */
-
 function face(name) {
 	try {
 		return lv.font_load(sprintf('%s/%s.bin', FONT_DIR, name));
@@ -141,8 +227,6 @@ function face(name) {
 		return null;
 	}
 }
-
-let F_TITLE, F_BIG, F_MED, F_SMALL;
 
 function fonts_load() {
 	F_TITLE = face('inter_semibold_21') ?? face('inter_semibold_15');
@@ -217,51 +301,59 @@ function text_w(font, s) {
 }
 
 /*
- * Forward declarations. ucode binds a top level name at the point where it
- * is declared, so a function that is defined above another one cannot call
- * it: the name is captured while it is still unset and the call fails with
- * "left-hand side is not a function". These are used before they are
- * defined, so they are declared here and assigned further down.
+ * 列表行的统一版式。四个列表页（clients / ports / wan / wifi）共用：
+ *
+ *   [dot]  主行文字                              右侧上行
+ *          副行文字                              右侧下行
+ *   ─────────────────────────────────────────────────────────
+ *
+ * 行高 ROW_H、副行偏移 ROW_SUB、右侧列 RIGHT_X / RIGHT_W 都取自上方的常量。
  */
-let touch_note, clients_merge_natflow, clients_sort;
-
-/* card that scrolls vertically */
-function card_new(parent) {
-	let card = lv.obj(parent);
-
-	card.set({ x: 10, y: BODY_Y, w: W - 20, h: BODY_H });
-	card.style({ bg_color: C_SURFACE, radius: 12, border_width: 0,
-		     pad_all: 0, clip_corner: true });
-	card.clickable(true);
-	card.scrollable(true);
-	card.scroll_dir(lv.DIR_VER);
-	card.scrollbar(lv.SCROLLBAR_AUTO);
-	card.on(lv.EVENT_PRESSED, touch_note);
-
-	return card;
+function row_dot(card, y, up) {
+	box_new(card, up ? C_OK : C_DOWN, 4)
+		.set({ x: DOT_X, y: y + DOT_OFF, w: DOT_S, h: DOT_S });
 }
 
-/* ------------------------------------------------------------------ */
-/* data                                                                */
+function row_rule(card, y) {
+	box_new(card, C_RULE, 0).set({ x: ROW_X, y: y - RULE_GAP, w: ROW_W, h: 1 });
+}
 
-const state = {
-	hostname: 'openwrt',
-	clock: '',
-	wan_device: null,
-	wan_rx: null, wan_tx: null, wan_ts: null,
-	rx_total: 0, tx_total: 0,
-	rx: [], tx: [],
-	rx_rate: 0, tx_rate: 0,
-	cpu: null, cpu_prev_total: null, cpu_prev_idle: null,
-	load: null,
-	mem_total: 0, mem_avail: 0,
-	temp: null, fan: null,
-	uptime: 0,
-	ports: [],
-	clients: [],
-	wan_ifaces: [],
-	networks: []
-};
+function row_main(card, y, text, has_dot, width) {
+	let x = has_dot ? TEXT_DOT_X : ROW_X;
+	let t = label_new(card, F_SMALL, C_TXT, text);
+
+	t.set({ x: x, y: y, w: width ?? (RIGHT_X - x - 8) });
+
+	return t;
+}
+
+function row_sub(card, y, text, has_dot) {
+	let x = has_dot ? TEXT_DOT_X : ROW_X;
+
+	return label_new(card, F_SMALL, C_DIM, text)
+		.set({ x: x, y: y + ROW_SUB, w: RIGHT_X - x - 8 });
+}
+
+function row_value(card, y, text, colour) {
+	let v = value_new(card, F_SMALL, colour ?? C_TXT, text);
+
+	v.obj.set({ x: RIGHT_X, y: y, w: RIGHT_W });
+
+	return v;
+}
+
+/* 静态页的「左标签 — 右数值」行，i 从 0 起，行距 GRID_STEP */
+function grid_row(card, i, name, colour) {
+	let y = GRID_TOP + i * GRID_STEP;
+
+	label_new(card, F_SMALL, C_DIM, name).set({ x: ROW_X, y: y + 3 });
+
+	return row_value(card, y, '--', colour);
+}
+
+function empty_new(card, text) {
+	label_new(card, F_SMALL, C_DIM, text).set({ x: ROW_X, y: ROW_TOP });
+}
 
 function monotonic() {
 	let c = clock(true);
@@ -336,8 +428,6 @@ function words(line) {
 	return filter(split(replace(trim(line), /[ \t]+/g, ' '), ' '),
 		      p => p != '');
 }
-
-/* ---- system -------------------------------------------------------- */
 
 function sys_read() {
 	/* CPU: busy share of the delta between two samples of /proc/stat */
@@ -434,10 +524,6 @@ function sys_read() {
 		state.uptime = int(num(trim(split(trim(up), ' ')[0])));
 }
 
-/* ---- ports --------------------------------------------------------- */
-
-const PORT_RE = /^(wan|lan[0-9]+|sfp)$/;
-
 function port_speed(dev) {
 	let raw = readfile(sprintf('/sys/class/net/%s/speed', dev));
 
@@ -515,7 +601,69 @@ function ports_read() {
 	state.ports = found;
 }
 
-/* ---- clients ------------------------------------------------------- */
+/* natflow keeps the per-client counters; it is the only source of a
+ * per-client rate that x-wrt already ships.  Line format:
+ *
+ *   ip,mac,auth_type,auth_status,rule_id,idle_time,
+ *   rx_pkts:rx_bytes,tx_pkts:tx_bytes,
+ *   rx_speed_pkts:rx_speed_bytes,tx_speed_pkts:tx_speed_bytes,ifname
+ */
+function natflow_split(field) {
+	let p = split(field ?? '', ':');
+
+	return length(p) > 1 ? num(p[1]) : 0;
+}
+
+function clients_merge_natflow() {
+	let text = readfile(NATFLOW_USERINFO);
+
+	if (!text)
+		return;
+
+	let found = state.clients ?? {};
+
+	for (let line in split(text, '\n')) {
+		let f = split(trim(line), ',');
+
+		if (length(f) < 10)
+			continue;
+
+		let mac = lc(trim(f[1]));
+		let rec = found[mac];
+
+		if (!rec) {
+			rec = { mac, ip: trim(f[0]), hostname: null };
+			found[mac] = rec;
+		}
+
+		if (!rec.ip)
+			rec.ip = trim(f[0]);
+
+		rec.rx_rate = natflow_split(f[8]);
+		rec.tx_rate = natflow_split(f[9]);
+		rec.rx_total = natflow_split(f[6]);
+		rec.tx_total = natflow_split(f[7]);
+		rec.ifname = trim(f[10] ?? '');
+	}
+
+	state.clients = found;
+}
+
+function clients_sort() {
+	let out = [];
+
+	for (let mac, rec in state.clients ?? {})
+		push(out, rec);
+
+	sort(out, (a, b) => {
+		let an = a.hostname ?? a.mac;
+		let bn = b.hostname ?? b.mac;
+
+		return an < bn ? -1 : (an > bn ? 1 : 0);
+	});
+
+	state.clients = out;
+}
 
 function clients_read() {
 	let found = {};
@@ -557,133 +705,6 @@ function clients_read() {
 	clients_merge_natflow();
 	clients_sort();
 }
-
-/* natflow keeps the per-client counters; it is the only source of a
- * per-client rate that x-wrt already ships.  Line format:
- *
- *   ip,mac,auth_type,auth_status,rule_id,idle_time,
- *   rx_pkts:rx_bytes,tx_pkts:tx_bytes,
- *   rx_speed_pkts:rx_speed_bytes,tx_speed_pkts:tx_speed_bytes,ifname
- */
-function natflow_split(field) {
-	let p = split(field ?? '', ':');
-
-	return length(p) > 1 ? num(p[1]) : 0;
-}
-
-clients_merge_natflow = function() {
-	let text = readfile(NATFLOW_USERINFO);
-
-	if (!text)
-		return;
-
-	let found = state.clients ?? {};
-
-	for (let line in split(text, '\n')) {
-		let f = split(trim(line), ',');
-
-		if (length(f) < 10)
-			continue;
-
-		let mac = lc(trim(f[1]));
-		let rec = found[mac];
-
-		if (!rec) {
-			rec = { mac, ip: trim(f[0]), hostname: null };
-			found[mac] = rec;
-		}
-
-		if (!rec.ip)
-			rec.ip = trim(f[0]);
-
-		rec.rx_rate = natflow_split(f[8]);
-		rec.tx_rate = natflow_split(f[9]);
-		rec.rx_total = natflow_split(f[6]);
-		rec.tx_total = natflow_split(f[7]);
-		rec.ifname = trim(f[10] ?? '');
-	}
-
-	state.clients = found;
-};
-
-clients_sort = function() {
-	let out = [];
-
-	for (let mac, rec in state.clients ?? {})
-		push(out, rec);
-
-	sort(out, (a, b) => {
-		let an = a.hostname ?? a.mac;
-		let bn = b.hostname ?? b.mac;
-
-		return an < bn ? -1 : (an > bn ? 1 : 0);
-	});
-
-	state.clients = out;
-};
-
-/* ---- wan ----------------------------------------------------------- */
-
-function wanif_is_wan(name) {
-	if (cfg.wan_ifaces)
-		return index(cfg.wan_ifaces, name) >= 0;
-
-	for (let pat in [ 'wan', 'wwan', 'modem', 'pppoe', 'lte', 'usb' ])
-		if (index(lc(name), pat) >= 0)
-			return true;
-
-	return false;
-}
-
-function wanif_read() {
-	let dump = ubus_call('network.interface', 'dump') ?? {};
-	let found = [];
-
-	for (let iface in dump.interface ?? []) {
-		let name = iface['.name'] ?? '';
-
-		if (!name || !wanif_is_wan(name))
-			continue;
-
-		let addr = null;
-
-		for (let a in iface['ipv4-address'] ?? []) {
-			if (type(a) == 'object' && a.address) {
-				addr = a.address;
-				break;
-			}
-		}
-
-		if (!addr) {
-			for (let a in iface['ipv6-address'] ?? []) {
-				if (type(a) == 'object' && a.address) {
-					addr = a.address;
-					break;
-				}
-			}
-		}
-
-		push(found, {
-			name,
-			proto: iface.proto ?? '',
-			up: !!iface.up,
-			device: iface.l3_device ?? iface.device ?? '',
-			address: addr,
-			uptime: num(iface.uptime),
-			metric: num(iface.metric)
-		});
-	}
-
-	sort(found, (a, b) => {
-		if (a.metric != b.metric)
-			return a.metric - b.metric;
-		return a.name < b.name ? -1 : 1;
-	});
-
-	state.wan_ifaces = found;
-}
-
-/* ---- wifi ---------------------------------------------------------- */
 
 function band_of(freq) {
 	if (!freq)
@@ -767,9 +788,6 @@ function clock_read() {
 	state.clock = sprintf('%02d:%02d', now.hour, now.min);
 }
 
-/* ------------------------------------------------------------------ */
-/* formatters                                                          */
-
 function rate_fmt(bytes) {
 	if (bytes >= 1000000)
 		return sprintf('%s MB/s', bytes >= 100000000
@@ -795,6 +813,16 @@ function rate_short(bytes) {
 		return sprintf('%.1fK', int(bytes / 100.0) / 10.0);
 
 	return sprintf('%d', bytes);
+}
+
+function row_rate(card, y, rx, tx) {
+	let r = value_new(card, F_SMALL, C_RX, sprintf('↓%s', rate_short(rx ?? 0)));
+
+	r.obj.set({ x: RIGHT_X, y: y, w: RIGHT_W });
+
+	let t = value_new(card, F_SMALL, C_TX, sprintf('↑%s', rate_short(tx ?? 0)));
+
+	t.obj.set({ x: RIGHT_X, y: y + ROW_SUB, w: RIGHT_W });
 }
 
 function total_fmt(bytes) {
@@ -838,25 +866,18 @@ function uptime_fmt(sec) {
 	return sprintf('%dm', m);
 }
 
-/* ------------------------------------------------------------------ */
-/* pages                                                               */
-
-let pages = [];		/* { name, tile, update?, poll? } */
-let dots = [];
-let active = 0;
-let screen, tileview;
-let clock_label;	/* text_new() wrapper */
-let last_touch;
-
+/*
+ * 页面标题 + 紧跟其后的计数徽标。计数标签的 x 由标题宽度算出来，返回给调用者，
+ * 之后直接 .text() 更新即可 —— 页面不必再自己算一遍坐标、也不会漏改标题串。
+ */
 function header_new(parent, title, count) {
 	label_new(parent, F_TITLE, C_TXT, title).set({ x: HEAD_X, y: HEAD_TOP });
 
-	if (count != null) {
-		let t = label_new(parent, F_SMALL, C_RULE, count);
+	let t = label_new(parent, F_SMALL, C_RULE, count ?? '');
 
-		t.set({ x: HEAD_X + 4 + text_w(F_TITLE, title),
-			y: HEAD_TOP + 8 });
-	}
+	t.set({ x: HEAD_X + 4 + text_w(F_TITLE, title), y: HEAD_TOP + 8 });
+
+	return t;
 }
 
 function bar_scaled(value, full, height) {
@@ -871,50 +892,6 @@ function bar_scaled(value, full, height) {
 	let floor = int((2 * 1000 + height - 1) / height);
 
 	return scaled > floor ? scaled : floor;
-}
-
-/* ---- usage page ---------------------------------------------------- */
-
-let usage = {};
-
-function usage_build(parent) {
-	header_new(parent, 'Usage', null);
-
-	let card = box_new(parent, C_SURFACE, 12);
-
-	card.set({ x: 10, y: BODY_Y, w: W - 20, h: BODY_H });
-
-	usage.rx_label = text_new(card, F_MED, C_RX, '↓ 0 KB/s');
-	usage.rx_label.obj.set({ x: 16, y: 14 });
-
-	usage.tx_label = text_new(card, F_MED, C_TX, '↑ 0 KB/s');
-	usage.tx_label.obj.set({ x: 16, y: 40 });
-
-	usage.total = text_new(card, F_SMALL, C_DIM, '');
-	usage.total.obj.set({ x: 16, y: 66, w: W - 52 });
-	usage.total.obj.long_mode(lv.LABEL_LONG_DOTS);
-
-	let chart = lv.chart(card);
-
-	chart.set({ x: 10, y: 92, w: W - 40, h: BODY_H - 102 });
-	chart.chart_type(lv.CHART_TYPE_BAR);
-	chart.point_count(POINTS);
-	chart.update_mode(lv.CHART_UPDATE_SHIFT);
-	chart.div_lines(0, 0);
-	chart.scrollbar(lv.SCROLLBAR_OFF);
-	chart.clickable(false);
-	chart.scrollable(false);
-	chart.style({ bg_opa: lv.OPA_TRANSP, border_width: 0, pad_all: 0,
-		      pad_column: 2 });
-	chart.style({ width: 0, height: 0 }, lv.PART_INDICATOR);
-	chart.chart_range(0, 1000);
-	chart.series(C_RX);
-	chart.series(C_TX);
-	chart.style({ bg_color: C_RX, bg_opa: lv.OPA_COVER, radius: 1 },
-		    lv.PART_ITEMS);
-
-	usage.chart = chart;
-	usage.bucket = 1;
 }
 
 function usage_update() {
@@ -932,12 +909,12 @@ function usage_update() {
 	if (bucket != usage.bucket) {
 		usage.bucket = bucket;
 		usage.chart.points(0, map(state.rx,
-			v => bar_scaled(v, bucket, BODY_H - 102)));
+			v => bar_scaled(v, bucket, CHART_H)));
 		usage.chart.points(1, map(state.tx,
-			v => bar_scaled(v, bucket, BODY_H - 102)));
+			v => bar_scaled(v, bucket, CHART_H)));
 	} else {
-		usage.chart.push(0, bar_scaled(state.rx_rate, bucket, BODY_H - 102));
-		usage.chart.push(1, bar_scaled(state.tx_rate, bucket, BODY_H - 102));
+		usage.chart.push(0, bar_scaled(state.rx_rate, bucket, CHART_H));
+		usage.chart.push(1, bar_scaled(state.tx_rate, bucket, CHART_H));
 	}
 
 	text_set(usage.rx_label, sprintf('↓ %s', rate_fmt(state.rx_rate)));
@@ -945,50 +922,6 @@ function usage_update() {
 	text_set(usage.total, sprintf('Total ↓ %s   ↑ %s',
 				      total_fmt(state.rx_total),
 				      total_fmt(state.tx_total)));
-}
-
-/* ---- system page --------------------------------------------------- */
-
-let sys_pg = {};
-
-function system_build(parent) {
-	header_new(parent, 'System', null);
-
-	let card = box_new(parent, C_SURFACE, 12);
-
-	card.set({ x: 10, y: BODY_Y, w: W - 20, h: BODY_H });
-
-	sys_pg.cpu = value_new(card, F_TITLE, C_TXT, '--');
-	sys_pg.cpu.obj.set({ x: 16, y: 2, w: W - 52 });
-
-	label_new(card, F_SMALL, C_DIM, 'CPU').set({ x: 16, y: 12 });
-
-	sys_pg.cpu_bar = bar_new(card, C_RX, 3);
-	sys_pg.cpu_bar.set({ x: 16, y: 34, w: W - 52, h: 6 });
-
-	label_new(card, F_SMALL, C_DIM, 'Load').set({ x: 16, y: 49 });
-
-	sys_pg.load = value_new(card, F_SMALL, C_TXT, '');
-	sys_pg.load.obj.set({ x: 110, y: 48, w: W - 156 });
-
-	sys_pg.mem = value_new(card, F_SMALL, C_TXT, '');
-	label_new(card, F_SMALL, C_DIM, 'Memory').set({ x: 16, y: 69 });
-	sys_pg.mem.obj.set({ x: 110, y: 68, w: W - 156 });
-
-	sys_pg.mem_bar = bar_new(card, C_TX, 3);
-	sys_pg.mem_bar.set({ x: 16, y: 90, w: W - 52, h: 6 });
-
-	sys_pg.temp = value_new(card, F_MED, C_OK, '');
-	label_new(card, F_SMALL, C_DIM, 'Temp').set({ x: 16, y: 108 });
-	sys_pg.temp.obj.set({ x: 16, y: 124, w: 120 });
-
-	sys_pg.fan = value_new(card, F_MED, C_TX, '');
-	label_new(card, F_SMALL, C_DIM, 'Fan').set({ x: 160, y: 108 });
-	sys_pg.fan.obj.set({ x: 160, y: 124, w: 100 });
-
-	sys_pg.uptime = value_new(card, F_SMALL, C_DIM, '');
-	label_new(card, F_SMALL, C_DIM, 'Uptime').set({ x: 16, y: 152 });
-	sys_pg.uptime.obj.set({ x: 110, y: 152, w: W - 156 });
 }
 
 function system_update() {
@@ -1013,36 +946,21 @@ function system_update() {
 	text_set(sys_pg.uptime, uptime_fmt(state.uptime) || '--');
 }
 
-/* ---- clients page -------------------------------------------------- */
-
-let clients_pg = {};
-
-function clients_build(parent) {
-	header_new(parent, 'Clients', null);
-
-	clients_pg.count = label_new(parent, F_SMALL, C_RULE, '');
-	clients_pg.card = card_new(parent);
-}
-
 function clients_update() {
 	let card = clients_pg.card;
 
 	card.clean();
 
 	clients_pg.count.text(sprintf('%d', length(state.clients)));
-	clients_pg.count.set({ x: HEAD_X + 4 + text_w(F_TITLE, 'Clients'),
-			       y: HEAD_TOP + 8 });
-
-	let y = 8;
 
 	if (!length(state.clients)) {
-		label_new(card, F_SMALL, C_DIM, 'no clients')
-			.set({ x: 16, y });
+		empty_new(card, 'No clients');
 		return;
 	}
 
+	let y = ROW_TOP;
+
 	for (let c in state.clients) {
-		let name = c.hostname ?? c.mac;
 		let sub = c.hostname ? c.mac : (c.ip ?? '');
 
 		if (c.ip && c.hostname)
@@ -1050,39 +968,18 @@ function clients_update() {
 		else if (c.ip && !c.hostname)
 			sub = c.ip;
 
-		label_new(card, F_SMALL, C_TXT, name).set({ x: 16, y, w: W - 130 });
+		row_main(card, y, c.hostname ?? c.mac, false);
 
 		if (sub)
-			label_new(card, F_SMALL, C_DIM, sub)
-				.set({ x: 16, y: y + 17, w: W - 130 });
+			row_sub(card, y, sub, false);
 
-		if (c.rx_rate != null || c.tx_rate != null) {
-			let r = value_new(card, F_SMALL, C_RX,
-					  sprintf('↓%s', rate_short(c.rx_rate ?? 0)));
+		/* 只有 natflow 认识的客户端才有速率，别给别的画一对 0 */
+		if (c.rx_rate != null || c.tx_rate != null)
+			row_rate(card, y, c.rx_rate, c.tx_rate);
 
-			r.obj.set({ x: W - 116, y, w: 90 });
-
-			let t = value_new(card, F_SMALL, C_TX,
-					  sprintf('↑%s', rate_short(c.tx_rate ?? 0)));
-
-			t.obj.set({ x: W - 116, y: y + 17, w: 90 });
-		}
-
-		y += 40;
-
-		box_new(card, C_RULE, 0).set({ x: 16, y: y - 3, w: W - 52, h: 1 });
+		y += ROW_H;
+		row_rule(card, y);
 	}
-}
-
-/* ---- ports page ---------------------------------------------------- */
-
-let ports_pg = {};
-
-function ports_build(parent) {
-	header_new(parent, 'Ports', null);
-
-	ports_pg.count = label_new(parent, F_SMALL, C_RULE, '');
-	ports_pg.card = card_new(parent);
 }
 
 function ports_update() {
@@ -1097,111 +994,28 @@ function ports_update() {
 			up++;
 
 	ports_pg.count.text(sprintf('%d/%d', up, length(state.ports)));
-	ports_pg.count.set({ x: HEAD_X + 4 + text_w(F_TITLE, 'Ports'),
-			     y: HEAD_TOP + 8 });
-
-	let y = 8;
 
 	if (!length(state.ports)) {
-		label_new(card, F_SMALL, C_DIM, 'no ports')
-			.set({ x: 16, y });
+		empty_new(card, 'No ports');
 		return;
 	}
 
-	for (let p in state.ports) {
-		box_new(card, p.up ? C_OK : C_DOWN, 4)
-			.set({ x: 16, y: y + 4, w: 7, h: 7 });
+	let y = ROW_TOP;
 
-		label_new(card, F_SMALL, C_TXT, p.name).set({ x: 31, y, w: 62 });
+	for (let p in state.ports) {
+		row_dot(card, y, p.up);
+		row_main(card, y, p.name, true, 62);
 
 		label_new(card, F_SMALL, p.up ? C_DIM : C_IDLE,
 			  p.up ? (speed_fmt(p.speed) || 'link') : 'down')
-			.set({ x: 96, y, w: 40 });
+			.set({ x: 96, y: y, w: 64 });
 
-		if (p.up) {
-			let r = value_new(card, F_SMALL, C_RX,
-					  sprintf('↓%s', rate_short(p.rx_rate)));
+		if (p.up)
+			row_rate(card, y, p.rx_rate, p.tx_rate);
 
-			r.obj.set({ x: W - 112, y, w: 86 });
-
-			let t = value_new(card, F_SMALL, C_TX,
-					  sprintf('↑%s', rate_short(p.tx_rate)));
-
-			t.obj.set({ x: W - 112, y: y + 17, w: 86 });
-		}
-
-		y += 36;
-
-		box_new(card, C_RULE, 0).set({ x: 16, y: y - 3, w: W - 52, h: 1 });
+		y += ROW_H;
+		row_rule(card, y);
 	}
-}
-
-/* ---- wan page ------------------------------------------------------ */
-
-let wan_pg = {};
-
-function wan_build(parent) {
-	header_new(parent, 'WAN', null);
-
-	wan_pg.count = label_new(parent, F_SMALL, C_RULE, '');
-	wan_pg.card = card_new(parent);
-}
-
-function wan_update() {
-	let card = wan_pg.card;
-
-	card.clean();
-
-	let up = 0;
-
-	for (let w in state.wan_ifaces)
-		if (w.up)
-			up++;
-
-	wan_pg.count.text(sprintf('%d/%d', up, length(state.wan_ifaces)));
-	wan_pg.count.set({ x: HEAD_X + 4 + text_w(F_TITLE, 'WAN'),
-			   y: HEAD_TOP + 8 });
-
-	let y = 8;
-
-	if (!length(state.wan_ifaces)) {
-		label_new(card, F_SMALL, C_DIM, 'no wan interface')
-			.set({ x: 16, y });
-		return;
-	}
-
-	for (let w in state.wan_ifaces) {
-		box_new(card, w.up ? C_OK : C_DOWN, 4)
-			.set({ x: 16, y: y + 4, w: 7, h: 7 });
-
-		label_new(card, F_SMALL, C_TXT, w.name).set({ x: 31, y, w: 120 });
-		label_new(card, F_SMALL, C_DIM, w.proto || '?')
-			.set({ x: 150, y, w: 80 });
-
-		let right = w.up ? uptime_fmt(w.uptime) : 'down';
-		let r = value_new(card, F_SMALL, w.up ? C_DIM : C_DOWN, right);
-
-		r.obj.set({ x: W - 116, y, w: 90 });
-
-		let sub = w.address ?? w.device ?? '';
-
-		label_new(card, F_SMALL, C_TXT, sub || '-')
-			.set({ x: 31, y: y + 18, w: W - 76 });
-
-		y += 44;
-
-		box_new(card, C_RULE, 0).set({ x: 16, y: y - 3, w: W - 52, h: 1 });
-	}
-}
-
-/* ---- wifi page ----------------------------------------------------- */
-
-let wifi_pg = {};
-
-function wifi_build(parent) {
-	header_new(parent, 'WiFi', null);
-
-	wifi_pg.card = card_new(parent);
 }
 
 function wifi_update() {
@@ -1209,45 +1023,32 @@ function wifi_update() {
 
 	card.clean();
 
-	let y = 8;
 	let total = 0;
 
 	if (!length(state.networks)) {
-		label_new(card, F_SMALL, C_DIM, 'no wireless networks')
-			.set({ x: 16, y });
+		empty_new(card, 'No wireless networks');
 		return;
 	}
+
+	let y = ROW_TOP;
 
 	for (let n in state.networks) {
 		total += n.clients;
 
-		box_new(card, n.up ? C_OK : C_DOWN, 4)
-			.set({ x: 16, y: y + 4, w: 7, h: 7 });
+		row_dot(card, y, n.up);
+		row_main(card, y, n.ssid, true, 150);
+		row_sub(card, y, sprintf('%s  %s', n.band ?? '?', n.security), true);
+		row_value(card, y, sprintf('%d', n.clients),
+			  n.clients ? C_TXT : C_DIM);
 
-		label_new(card, F_SMALL, C_TXT, n.ssid)
-			.set({ x: 31, y, w: 160 });
-		label_new(card, F_SMALL, C_DIM,
-			  sprintf('%s  %s', n.band ?? '?', n.security))
-			.set({ x: 31, y: y + 17 });
-
-		let cnt = label_new(card, F_SMALL, n.clients ? C_TXT : C_DIM,
-				    sprintf('%d', n.clients));
-
-		cnt.set({ x: W - 70, y: y + 8, w: 30 });
-		cnt.style({ text_align: lv.TEXT_ALIGN_RIGHT });
-
-		y += 40;
-
-		box_new(card, C_RULE, 0).set({ x: 16, y: y - 3, w: W - 52, h: 1 });
+		y += ROW_H;
+		row_rule(card, y);
 	}
 
 	label_new(card, F_SMALL, C_DIM,
 		  sprintf('total %d station%s', total, total == 1 ? '' : 's'))
-		.set({ x: 16, y: y + 4 });
+		.set({ x: ROW_X, y: y + 4 });
 }
-
-/* ------------------------------------------------------------------ */
-/* frame                                                               */
 
 function dots_refresh() {
 	for (let i = 0; i < length(dots); i++)
@@ -1268,6 +1069,123 @@ function page_show(i, anim) {
 	p.update?.();
 }
 
+function touch_note() {
+	last_touch = monotonic();
+
+	if (blanked) {
+		blanked = false;
+		backlight_set(cfg.brightness);
+		lv.touch_drop();
+	}
+}
+
+/* card that scrolls vertically */
+function card_new(parent, scroll) {
+	let card = lv.obj(parent);
+
+	card.set({ x: CARD_X, y: BODY_Y, w: CARD_W, h: BODY_H });
+	card.style({ bg_color: C_SURFACE, radius: CARD_R, border_width: 0,
+		     pad_all: 0, clip_corner: true });
+	card.clickable(!!scroll);
+	card.scrollable(!!scroll);
+	card.scroll_dir(lv.DIR_VER);
+	card.scrollbar(lv.SCROLLBAR_AUTO);
+	card.on(lv.EVENT_PRESSED, touch_note);
+
+	return card;
+}
+
+function usage_build(parent) {
+	header_new(parent, 'Usage');
+
+	let card = card_new(parent, false);
+
+	usage.rx_label = text_new(card, F_MED, C_RX, '↓ 0 KB/s');
+	usage.rx_label.obj.set({ x: ROW_X, y: GRID_TOP + 2 });
+
+	usage.tx_label = text_new(card, F_MED, C_TX, '↑ 0 KB/s');
+	usage.tx_label.obj.set({ x: ROW_X, y: GRID_TOP + 28 });
+
+	usage.total = text_new(card, F_SMALL, C_DIM, '');
+	usage.total.obj.set({ x: ROW_X, y: GRID_TOP + 54, w: ROW_W });
+	usage.total.obj.long_mode(lv.LABEL_LONG_DOTS);
+
+	let chart = lv.chart(card);
+
+	chart.set({ x: ROW_X, y: CHART_Y, w: ROW_W, h: CHART_H });
+	chart.chart_type(lv.CHART_TYPE_BAR);
+	chart.point_count(POINTS);
+	chart.update_mode(lv.CHART_UPDATE_SHIFT);
+	chart.div_lines(0, 0);
+	chart.scrollbar(lv.SCROLLBAR_OFF);
+	chart.clickable(false);
+	chart.scrollable(false);
+	chart.style({ bg_opa: lv.OPA_TRANSP, border_width: 0, pad_all: 0,
+		      pad_column: 2 });
+	chart.style({ width: 0, height: 0 }, lv.PART_INDICATOR);
+	chart.chart_range(0, 1000);
+	chart.series(C_RX);
+	chart.series(C_TX);
+	chart.style({ bg_color: C_RX, bg_opa: lv.OPA_COVER, radius: 1 },
+		    lv.PART_ITEMS);
+
+	usage.chart = chart;
+	usage.bucket = 1;
+}
+
+function system_build(parent) {
+	header_new(parent, 'System');
+
+	let card = card_new(parent, false);
+
+	/* CPU：大字号百分比 + 进度条 */
+	label_new(card, F_SMALL, C_DIM, 'CPU').set({ x: ROW_X, y: GRID_TOP + 8 });
+
+	sys_pg.cpu = value_new(card, F_TITLE, C_TXT, '--');
+	sys_pg.cpu.obj.set({ x: RIGHT_X, y: GRID_TOP, w: RIGHT_W });
+
+	sys_pg.cpu_bar = bar_new(card, C_RX, 3);
+	sys_pg.cpu_bar.set({ x: ROW_X, y: GRID_TOP + 34, w: ROW_W, h: 6 });
+
+	/* 三行「标签 — 数值」，全部落在同一条网格上 */
+	sys_pg.load = grid_row(card, 2, 'Load');
+	sys_pg.mem = grid_row(card, 3, 'Memory');
+
+	sys_pg.mem_bar = bar_new(card, C_TX, 3);
+	sys_pg.mem_bar.set({ x: ROW_X, y: GRID_TOP + 3 * GRID_STEP + 22,
+			    w: ROW_W, h: 6 });
+
+	sys_pg.uptime = grid_row(card, 5, 'Uptime');
+
+	/* 温度 / 风扇共用一行，两列对齐到同样的右边界 */
+	let ty = GRID_TOP + 6 * GRID_STEP;
+
+	label_new(card, F_SMALL, C_DIM, 'Temp').set({ x: ROW_X, y: ty + 3 });
+
+	sys_pg.temp = value_new(card, F_SMALL, C_OK, '');
+	sys_pg.temp.obj.set({ x: MID - 56, y: ty, w: 56 });
+
+	label_new(card, F_SMALL, C_DIM, 'Fan').set({ x: MID + 12, y: ty + 3 });
+
+	sys_pg.fan = value_new(card, F_SMALL, C_TX, '');
+	sys_pg.fan.obj.set({ x: RIGHT_EDGE - 70, y: ty, w: 70 });
+}
+
+function clients_build(parent) {
+	clients_pg.count = header_new(parent, 'Clients');
+	clients_pg.card = card_new(parent, true);
+}
+
+function ports_build(parent) {
+	ports_pg.count = header_new(parent, 'Ports');
+	ports_pg.card = card_new(parent, true);
+}
+
+function wifi_build(parent) {
+	header_new(parent, 'WiFi');
+	wifi_pg.card = card_new(parent, true);
+}
+
 function tile_changed() {
 	let now = tileview.tile_active()?.col ?? 0;
 
@@ -1284,19 +1202,6 @@ function tile_changed() {
 	p.poll?.();
 	p.update?.();
 }
-
-/* Same reason as the geometry constants above: touch_note() reads it. */
-let blanked = false;
-
-touch_note = function() {
-	last_touch = monotonic();
-
-	if (blanked) {
-		blanked = false;
-		backlight_set(cfg.brightness);
-		lv.touch_drop();
-	}
-};
 
 function blank_check() {
 	if (!cfg.blank || blanked)
@@ -1337,8 +1242,6 @@ function frame_build() {
 		  build: clients_build, update: clients_update, poll: clients_read },
 		{ key: 'page_ports', name: 'ports',
 		  build: ports_build, update: ports_update, poll: ports_read },
-		{ key: 'page_wan', name: 'wan',
-		  build: wan_build, update: wan_update, poll: wanif_read },
 		{ key: 'page_wifi', name: 'wifi',
 		  build: wifi_build, update: wifi_update }
 	];
@@ -1390,13 +1293,18 @@ function frame_build() {
 	clock_label.obj.style({ text_align: lv.TEXT_ALIGN_RIGHT });
 
 	dots_refresh();
+
+	/*
+	 * 把建好的这块 screen 真正显示出来。
+	 *
+	 * lv.screen_create() 只是造了一个没有父对象的 screen，必须 lv.screen_load()
+	 * 才会被渲染（见绑定层 KernelDoc）。少了这一句，六个页面连同启动画面会全部
+	 * 画在一块永远不显示的内存上：屏上只有 LVGL 默认那块空白屏，而且因为默认屏
+	 * 没有任何变化，之后连一次重绘都不会发生 —— 表现为"背光亮、屏全黑/全白、
+	 * 死活不刷新"。
+	 */
+	lv.screen_load(screen);
 }
-
-/* ------------------------------------------------------------------ */
-/* splash — the x-wrt mark while the panel starts up                   */
-
-let splash_obj = null;
-let splash_deadline = 0;
 
 function splash_hide() {
 	if (!splash_obj)
@@ -1456,7 +1364,8 @@ function splash_show() {
 }
 
 /* ------------------------------------------------------------------ */
-/* main                                                                */
+/* 主流程 */
+/* ------------------------------------------------------------------ */
 
 config_read();
 backlight_find();
@@ -1467,8 +1376,6 @@ if (!lv.init())
 
 if (!lv.display_drm(getenv('PANEL_DRM_DEVICE') ?? '/dev/dri/card0', -1))
 	die('cannot open the DRM display');
-
-let touch_device = getenv('PANEL_TOUCH_DEVICE');
 
 if (touch_device)
 	lv.indev_evdev(touch_device);
@@ -1492,7 +1399,6 @@ wan_read();
 sys_read();
 ports_read();
 clients_read();
-wanif_read();
 wifi_read();
 clock_read();
 
@@ -1523,8 +1429,7 @@ uloop.interval(1000, function() {
 
 uloop.interval(5000, function() {
 	ports_read();
-	wanif_read();
-	clients_read();
+		clients_read();
 	wifi_read();
 
 	if (pages[active].name != 'usage')
@@ -1532,8 +1437,6 @@ uloop.interval(5000, function() {
 
 	lv.refresh();
 });
-
-let rotate_tick = 0;
 
 uloop.interval(1000, function() {
 	blank_check();
@@ -1550,6 +1453,17 @@ uloop.interval(1000, function() {
 	rotate_tick = 0;
 	page_show((active + 1) % length(pages), true);
 	lv.refresh();
+});
+
+/*
+ * LVGL 心跳：必须周期性调用 lv.timer_handler()。
+ *
+ * 它负责三件事 —— 推进 LVGL 的动画、读取触摸输入、把待重绘区域真正画出来。
+ * 只调 lv.refresh() 的话，静态的数值刷新看着正常，但翻页动画和触摸输入
+ * 都会失灵（lv_refr_now() 只是把当前状态渲染一遍，不会推进任何东西）。
+ */
+uloop.interval(50, function() {
+	lv.timer_handler();
 });
 
 ubus.listener('network.interface', function() {
