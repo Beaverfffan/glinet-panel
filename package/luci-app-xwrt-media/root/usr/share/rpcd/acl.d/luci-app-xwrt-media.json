@@ -1,0 +1,22 @@
+{
+	"luci-app-xwrt-media": {
+		"description": "Grant access to the xwrt-media panel media playback service",
+		"read": {
+			"file": {
+				"/var/run/xwrt-media.status": [ "read" ],
+				"/usr/share/xwrt-media": [ "list" ],
+				"/usr/share/xwrt-media/FORMAT.md": [ "read" ],
+				"/usr/share/xwrt-media/badapple.xwpm.gz": [ "read", "stat" ],
+				"/root/media": [ "list" ],
+				"/root/media/*": [ "read", "stat" ]
+			},
+			"uci": [ "xwrt_media" ]
+		},
+		"write": {
+			"file": {
+				"/etc/init.d/xwrt-media": [ "exec" ]
+			},
+			"uci": [ "xwrt_media" ]
+		}
+	}
+}

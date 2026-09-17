@@ -1,0 +1,17 @@
+config media 'main'
+	# 是否在开机时自动播放
+	option enabled '0'
+	# 媒体文件（.xwpm 或 .xwpm.gz）
+	option file '/usr/share/xwrt-media/badapple.xwpm.gz'
+	# 文件是 gzip 压缩的？1 = 用 gunzip 流式喂给播放器
+	option gzip '1'
+	# 覆盖容器里的帧率；0 = 用容器自带的
+	option fps '0'
+	# 循环播放
+	option loop '1'
+	# 播放期间把背光拉到这个百分比（0 = 不动）
+	option brightness '100'
+	# 播放期间停掉面板服务（两者抢同一块 DRM plane）
+	option stop_panel '1'
+	# 播完（非循环时）是否自动重启面板服务
+	option restore_panel '1'

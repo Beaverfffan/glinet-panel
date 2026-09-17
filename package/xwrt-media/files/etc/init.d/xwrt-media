@@ -1,0 +1,159 @@
+#!/bin/sh /etc/rc.common
+#
+# xwrt-media —— 在 DRM 小屏上播放 .xwpm 媒体包
+#
+# 用 procd 托管播放器。播放器与面板服务（xwrt-panel）抢同一块 DRM plane，
+# 所以起播前先停它，播完（非循环）再拉回来。
+# 状态写进 /var/run/xwrt-media.status（key=value），LuCI 页面直接读它。
+#
+# ⚠️ 故意**不设** `procd_set_param respawn`：非循环播放正常结束后 procd 会
+#    把实例再拉起来，那样就会无限重播。需要"崩了自动重启"的话自己加回去。
+
+START=95
+STOP=10
+USE_PROCD=1
+
+STATUS=/var/run/xwrt-media.status
+MEDIA_DIR=/usr/share/xwrt-media
+DEFAULT_FILE=$MEDIA_DIR/badapple.xwpm.gz
+
+ENABLED=0
+M_FILE=$DEFAULT_FILE
+GZIP=1
+FPS=0
+LOOP=1
+BRIGHT=100
+STOP_PANEL=1
+RESTORE_PANEL=1
+
+load_cfg() {
+	config_load xwrt_media
+	config_get ENABLED       main enabled       0
+	config_get M_FILE        main file          "$DEFAULT_FILE"
+	config_get GZIP          main gzip          1
+	config_get FPS           main fps           0
+	config_get LOOP          main loop          1
+	config_get BRIGHT        main brightness    100
+	config_get STOP_PANEL    main stop_panel    1
+	config_get RESTORE_PANEL main restore_panel 1
+}
+
+write_status() {
+	local run=0 pid
+	pid=$(pgrep -x xwpmplay | head -1)
+	[ -n "$pid" ] && run=1
+	{
+		echo "running=$run"
+		echo "pid=$pid"
+		echo "enabled=$ENABLED"
+		echo "file=$M_FILE"
+		echo "gzip=$GZIP"
+		echo "fps=$FPS"
+		echo "loop=$LOOP"
+		echo "media_dir=$MEDIA_DIR"
+		if [ -f "$M_FILE" ]; then
+			if [ "$GZIP" = "1" ]; then
+				gunzip -c "$M_FILE" 2>/dev/null | /usr/bin/xwpmplay - --info 2>/dev/null
+			else
+				/usr/bin/xwpmplay "$M_FILE" --info 2>/dev/null
+			fi
+		else
+			echo "error=media_file_not_found"
+		fi
+	} > "$STATUS".tmp 2>/dev/null
+	mv "$STATUS".tmp "$STATUS" 2>/dev/null
+}
+
+panel_start() {
+	[ -x /etc/init.d/xwrt-panel ] || return 0
+	/etc/init.d/xwrt-panel start >/dev/null 2>&1
+}
+
+# ⚠️ 不要用 pkill —— BusyBox 上**可能没有这个 applet**（实测 GL-BE14000 上
+#    `pkill: not found`，rc=127），而我们把 stderr 重定向掉了，于是"停止"
+#    看起来成功、实际什么都没做，播放器继续当孤儿进程占着 DRM plane。
+#    用 pgrep + kill 才可靠。
+kill_player() {
+	local p
+	for p in $(pgrep -x xwpmplay 2>/dev/null); do
+		kill "$p" 2>/dev/null
+	done
+	sleep 1
+	for p in $(pgrep -x xwpmplay 2>/dev/null); do
+		kill -9 "$p" 2>/dev/null
+	done
+	# gunzip 会因为管道断开（SIGPIPE）自己退出，这里再兜一下
+	[ -n "${M_FILE:-}" ] && for p in $(pgrep -f "gunzip -c $M_FILE" 2>/dev/null); do
+		kill "$p" 2>/dev/null
+	done
+	return 0
+}
+
+set_backlight() {
+	[ "$BRIGHT" = "0" ] && return 0
+	local b=/sys/class/backlight/backlight max
+	[ -w "$b/brightness" ] || return 0
+	max=$(cat "$b/max_brightness" 2>/dev/null)
+	[ -n "$max" ] || return 0
+	echo $((max * BRIGHT / 100)) > "$b/brightness" 2>/dev/null
+}
+
+start_service() {
+	load_cfg
+
+	if [ "$ENABLED" != "1" ]; then
+		logger -t xwrt-media "disabled (/etc/config/xwrt_media: enabled=0)"
+		write_status
+		# ⚠️ 这里**不能**开一个假实例（比如跑 sleep）来占位：
+		#    procd 会把同名实例视为"已在运行"，之后改了配置再 start 时
+		#    它不会换成真正的播放命令，表现就是"服务说启动了但什么都没播"。
+		return 0
+	fi
+
+	if [ ! -f "$M_FILE" ]; then
+		logger -t xwrt-media "media file not found: $M_FILE"
+		write_status
+		return 1
+	fi
+
+	local reader='cat'
+	[ "$GZIP" = "1" ] && reader='gunzip -c'
+
+	local fps_args=''
+	[ "$FPS" != "0" ] && fps_args=" $FPS"
+
+	# 循环用**外层 shell**做，不把 --loop 交给播放器：
+	# gzip 是管道、不能回头，播放器的 --loop 对管道无效。
+	local body="$reader '$M_FILE' | /usr/bin/xwpmplay -$fps_args"
+	if [ "$LOOP" = "1" ]; then
+		body="while :; do $body || break; sleep 1; done"
+	fi
+
+	local tail_cmd=':'
+	[ "$RESTORE_PANEL" = "1" ] && tail_cmd='/etc/init.d/xwrt-panel start >/dev/null 2>&1'
+
+	# 起播前先清掉可能残留的播放器（否则新实例抢不到 DRM plane 会立刻退出）
+	kill_player
+	[ "$STOP_PANEL" = "1" ] && /etc/init.d/xwrt-panel stop >/dev/null 2>&1
+	set_backlight
+
+	procd_open_instance
+	procd_set_param command /bin/sh -c "$body; rc=\$?; $tail_cmd; exit \$rc"
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	logger -t xwrt-media "play $M_FILE (gzip=$GZIP fps=$FPS loop=$LOOP)"
+	( sleep 3; write_status ) &
+}
+
+stop_service() {
+	load_cfg
+	kill_player
+	[ "$RESTORE_PANEL" = "1" ] && panel_start
+	write_status
+}
+
+service_triggers() {
+	procd_add_reload_trigger xwrt_media
+}

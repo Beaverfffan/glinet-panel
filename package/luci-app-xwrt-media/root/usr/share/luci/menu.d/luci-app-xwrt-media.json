@@ -1,0 +1,13 @@
+{
+	"admin/services/xwrt-media": {
+		"title": "媒体播放",
+		"order": 62,
+		"action": {
+			"type": "view",
+			"path": "xwrt-media"
+		},
+		"depends": {
+			"acl": [ "luci-app-xwrt-media" ]
+		}
+	}
+}

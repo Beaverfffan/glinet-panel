@@ -1,0 +1,37 @@
+MIT License
+
+Copyright (c) 2026 Beaverfffan <1056715226@qq.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---------------------------------------------------------------------------
+
+NOTE ON BUNDLED MEDIA
+
+The MIT license above covers the source code, the host-side encoding tools and
+the packaging files only.
+
+media/bad_apple_video.mp4 and the .xwpm media packs generated from it are NOT
+covered by the MIT license. "Bad Apple!!" -- its music, lyrics and the video
+itself -- remains the property of its original creators (ZUN / Team Shanghai
+Alice, Alstroemeria Records, and the authors of the animation). The file is
+bundled here solely so the demo is reproducible on personal hardware. Do not
+use it commercially. If you intend to redistribute or use this publicly,
+verify the licensing yourself or replace the media with material you have the
+rights to -- tools/xwpm-encode.py converts anything.
